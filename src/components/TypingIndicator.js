@@ -4,8 +4,9 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { MessageSquare } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 
-const TypingIndicator = () => {
+const TypingIndicator = ({ typingText = 'Thinking...', topicGradient, topicGlow }) => {
   const { theme } = useTheme();
+  const gradientColors = topicGradient || [theme.gradient1, theme.gradient2];
   const dot1 = useRef(new Animated.Value(0)).current;
   const dot2 = useRef(new Animated.Value(0)).current;
   const dot3 = useRef(new Animated.Value(0)).current;
@@ -65,7 +66,7 @@ const TypingIndicator = () => {
         }}
       >
         <LinearGradient
-          colors={[theme.gradient1, theme.gradient2]}
+          colors={gradientColors}
           style={styles.dot}
         />
       </Animated.View>
@@ -74,12 +75,6 @@ const TypingIndicator = () => {
 
   return (
     <Animated.View style={[styles.wrapper, { opacity: fadeIn }]}>
-      <LinearGradient
-        colors={[theme.gradient1, theme.gradient2]}
-        style={styles.avatarContainer}
-      >
-        <MessageSquare size={16} color="#FFFFFF" />
-      </LinearGradient>
       <View style={styles.bubbleWrapper}>
         <View
           style={[
@@ -94,7 +89,7 @@ const TypingIndicator = () => {
           {renderDot(dot2, 1)}
           {renderDot(dot3, 2)}
         </View>
-        <Text style={[styles.typingText, { color: theme.textMuted }]}>Typing...</Text>
+        <Text style={[styles.typingText, { color: theme.textMuted }]}>{typingText}</Text>
       </View>
     </Animated.View>
   );
@@ -104,7 +99,7 @@ const styles = StyleSheet.create({
   wrapper: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    marginLeft: 16,
+    marginLeft: 24,
     marginVertical: 6,
   },
   avatarContainer: {

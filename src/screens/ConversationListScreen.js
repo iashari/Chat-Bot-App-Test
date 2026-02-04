@@ -54,16 +54,41 @@ const iconMap = {
   Mic: Mic,
   FileText: FileText,
   Sparkles: Sparkles,
+  MessageSquare: MessageSquare,
 };
 
-import { conversations as initialConversations, userProfile } from '../data/mockData';
 import { useTheme } from '../context/ThemeContext';
+import { useAuth } from '../context/AuthContext';
+import { getChats, createChat, deleteChat, updateChat } from '../services/api';
+import useResponsive from '../hooks/useResponsive';
+import CustomAlert from '../components/CustomAlert';
 
-const { width } = Dimensions.get('window');
+// Base dimensions for scaling (module-level for StyleSheet)
+const BASE_WIDTH = 393;
+const { width: screenWidth } = Dimensions.get('window');
+
+// Module-level scale functions for StyleSheet.create()
+const scale = (size) => {
+  const ratio = screenWidth / BASE_WIDTH;
+  const newSize = size * ratio;
+  const minScale = size * 0.7;
+  const maxScale = size * 1.5;
+  return Math.round(Math.min(Math.max(newSize, minScale), maxScale));
+};
+
+const moderateScale = (size, factor = 0.5) => {
+  const ratio = screenWidth / BASE_WIDTH;
+  const newSize = size + (size * ratio - size) * factor;
+  const minScale = size * 0.85;
+  const maxScale = size * 1.3;
+  return Math.round(Math.min(Math.max(newSize, minScale), maxScale));
+};
 
 const ConversationListScreen = ({ navigation }) => {
   const { theme } = useTheme();
-  const [conversations, setConversations] = useState(initialConversations);
+  const { user } = useAuth();
+  const { width, getPadding, isTablet, getContainerStyle } = useResponsive();
+  const [conversations, setConversations] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -71,13 +96,82 @@ const ConversationListScreen = ({ navigation }) => {
   const [showChatMenu, setShowChatMenu] = useState(false);
   const [selectedChat, setSelectedChat] = useState(null);
   const [mutedChats, setMutedChats] = useState([]);
+  const [showNewChatModal, setShowNewChatModal] = useState(false);
+  const [newChatName, setNewChatName] = useState('');
+  const [newChatPrompt, setNewChatPrompt] = useState('');
+  const [selectedPromptId, setSelectedPromptId] = useState('general');
+  const [alertConfig, setAlertConfig] = useState({ visible: false, title: '', message: '', buttons: [], type: 'info' });
+
+  // Preset system prompt templates
+  const promptTemplates = [
+    {
+      id: 'general',
+      name: 'General Assistant',
+      icon: 'Bot',
+      color: '#6F00FF',
+      prompt: 'You are a helpful AI assistant. Be concise, accurate, and friendly. Answer questions clearly and provide useful information.',
+    },
+    {
+      id: 'coder',
+      name: 'Code Helper',
+      icon: 'Code2',
+      color: '#10B981',
+      prompt: 'You are an expert programming assistant. Help with code debugging, writing clean code, explaining concepts, and best practices. Provide code examples when helpful.',
+    },
+    {
+      id: 'creative',
+      name: 'Creative Writer',
+      icon: 'Palette',
+      color: '#F59E0B',
+      prompt: 'You are a creative writing assistant. Help with stories, poems, scripts, and creative content. Be imaginative, engaging, and help bring ideas to life.',
+    },
+    {
+      id: 'tutor',
+      name: 'Study Tutor',
+      icon: 'GraduationCap',
+      color: '#3B82F6',
+      prompt: 'You are a patient and knowledgeable tutor. Explain concepts clearly, break down complex topics, and help with learning. Use examples and analogies to make things easier to understand.',
+    },
+    {
+      id: 'analyst',
+      name: 'Data Analyst',
+      icon: 'BarChart3',
+      color: '#EC4899',
+      prompt: 'You are a data analysis expert. Help analyze data, explain statistics, suggest visualizations, and provide insights. Be precise and data-driven in your responses.',
+    },
+    {
+      id: 'custom',
+      name: 'Custom',
+      icon: 'Sparkles',
+      color: '#8B5CF6',
+      prompt: '',
+    },
+  ];
 
   // Animation refs
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
   const filterAnim = useRef(new Animated.Value(0)).current;
 
+  // Load chats from backend on mount
+  const loadChats = async () => {
+    setRefreshing(true);
+    const result = await getChats();
+    if (!result.error) {
+      // Transform backend data to match app format
+      const transformedChats = result.chats.map(chat => ({
+        ...chat,
+        timestamp: chat.updatedAt ? new Date(chat.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Now',
+        isOnline: true,
+      }));
+      setConversations(transformedChats);
+    }
+    setRefreshing(false);
+  };
+
   useEffect(() => {
+    loadChats();
+
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -124,11 +218,7 @@ const ConversationListScreen = ({ navigation }) => {
   const recentConversations = conversations.filter(c => !c.isPinned);
 
   const onRefresh = useCallback(() => {
-    setRefreshing(true);
-    setTimeout(() => {
-      setConversations(initialConversations);
-      setRefreshing(false);
-    }, 1000);
+    loadChats();
   }, []);
 
   const handleConversationPress = (conversation) => {
@@ -136,17 +226,79 @@ const ConversationListScreen = ({ navigation }) => {
   };
 
   const handleNewChat = () => {
-    const newConversation = {
-      id: Date.now().toString(),
-      name: 'New Chat',
-      icon: 'Sparkles',
-      iconColor: theme.primary,
-      lastMessage: 'Start a new conversation...',
+    setNewChatName('');
+    setNewChatPrompt('');
+    setSelectedPromptId('general');
+    setShowNewChatModal(true);
+  };
+
+  const handleCreateChat = async () => {
+    if (!newChatName.trim()) {
+      Alert.alert('Error', 'Please enter a chat name');
+      return;
+    }
+
+    // Get selected template
+    const selectedTemplate = promptTemplates.find(t => t.id === selectedPromptId);
+    const finalPrompt = selectedPromptId === 'custom'
+      ? newChatPrompt.trim()
+      : selectedTemplate?.prompt || '';
+
+    // Create chat in backend
+    const result = await createChat(
+      newChatName.trim(),
+      finalPrompt || 'You are a helpful AI assistant. Be concise, accurate, and friendly.',
+      selectedTemplate?.icon || 'MessageSquare',
+      selectedTemplate?.color || theme.primary
+    );
+
+    if (result.error) {
+      Alert.alert('Error', result.error);
+      return;
+    }
+
+    const newChat = {
+      ...result.chat,
       timestamp: 'Now',
-      messages: [],
       isOnline: true,
     };
-    navigation.navigate('ChatDetail', { conversation: newConversation });
+
+    setConversations(prev => [newChat, ...prev]);
+    setShowNewChatModal(false);
+    navigation.navigate('ChatDetail', { conversation: newChat });
+  };
+
+  const handleDeleteChat = (chat) => {
+    const chatToDelete = chat || selectedChat;
+    if (!chatToDelete) return;
+
+    setShowChatMenu(false);
+    setAlertConfig({
+      visible: true,
+      title: 'Delete Chat',
+      message: `Are you sure you want to delete "${chatToDelete.name}"? This action cannot be undone.`,
+      type: 'error',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          onPress: async () => {
+            const result = await deleteChat(chatToDelete.id);
+            if (!result.error) {
+              setConversations(prev => prev.filter(c => c.id !== chatToDelete.id));
+            } else {
+              setAlertConfig({
+                visible: true,
+                title: 'Error',
+                message: result.error,
+                type: 'error',
+                buttons: [{ text: 'OK', style: 'default' }],
+              });
+            }
+          },
+        },
+      ],
+    });
   };
 
   const handleLongPress = (chat) => {
@@ -155,12 +307,17 @@ const ConversationListScreen = ({ navigation }) => {
     setShowChatMenu(true);
   };
 
-  const handlePinChat = () => {
-    setConversations(prev =>
-      prev.map(c =>
-        c.id === selectedChat.id ? { ...c, isPinned: !c.isPinned } : c
-      )
-    );
+  const handlePinChat = async () => {
+    const newPinStatus = !selectedChat.isPinned;
+    // Update in backend
+    const result = await updateChat(selectedChat.id, { isPinned: newPinStatus });
+    if (!result.error) {
+      setConversations(prev =>
+        prev.map(c =>
+          c.id === selectedChat.id ? { ...c, isPinned: newPinStatus } : c
+        )
+      );
+    }
     setShowChatMenu(false);
   };
 
@@ -173,24 +330,6 @@ const ConversationListScreen = ({ navigation }) => {
     setShowChatMenu(false);
   };
 
-  const handleDeleteChat = () => {
-    Alert.alert(
-      'Delete Chat',
-      `Are you sure you want to delete "${selectedChat.name}"?`,
-      [
-        { text: 'Cancel', style: 'cancel', onPress: () => setShowChatMenu(false) },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            setConversations(prev => prev.filter(c => c.id !== selectedChat.id));
-            setShowChatMenu(false);
-          },
-        },
-      ]
-    );
-  };
-
   const filters = [
     { key: 'all', label: 'All', count: conversations.length },
     { key: 'pinned', label: 'Pinned', count: pinnedConversations.length },
@@ -198,11 +337,20 @@ const ConversationListScreen = ({ navigation }) => {
   ];
 
   const quickActions = [
-    { icon: Code2, label: 'Code' },
-    { icon: FileText, label: 'Write' },
-    { icon: Palette, label: 'Create' },
-    { icon: Calculator, label: 'Math' },
+    { icon: Bot, label: 'General', templateId: 'general', chatName: 'General Assistant' },
+    { icon: Code2, label: 'Code', templateId: 'coder', chatName: 'Code Helper' },
+    { icon: Palette, label: 'Creative', templateId: 'creative', chatName: 'Creative Writer' },
+    { icon: GraduationCap, label: 'Study', templateId: 'tutor', chatName: 'Study Tutor' },
+    { icon: BarChart3, label: 'Analyst', templateId: 'analyst', chatName: 'Data Analyst' },
+    { icon: Sparkles, label: 'Custom', templateId: 'custom', chatName: 'Custom' },
   ];
+
+  const handleQuickAction = (action) => {
+    setNewChatName(action.chatName);
+    setNewChatPrompt('');
+    setSelectedPromptId(action.templateId);
+    setShowNewChatModal(true);
+  };
 
   const GlassContainer = ({ children, style, noPadding }) => {
     if (Platform.OS === 'web') {
@@ -244,6 +392,15 @@ const ConversationListScreen = ({ navigation }) => {
     );
   };
 
+  // Dynamic responsive values
+  const responsivePadding = getPadding();
+  const responsiveStyles = {
+    header: { paddingHorizontal: responsivePadding, paddingTop: scale(16), paddingBottom: scale(24) },
+    section: { paddingHorizontal: responsivePadding, marginBottom: scale(32) },
+    heroCard: { padding: scale(24), borderRadius: scale(24) },
+    fontSize: { title: moderateScale(18), body: moderateScale(14), small: moderateScale(12) },
+  };
+
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       {/* Ambient background gradients for glass effect */}
@@ -265,7 +422,7 @@ const ConversationListScreen = ({ navigation }) => {
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <ScrollView
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: scale(120) }]}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -283,7 +440,7 @@ const ConversationListScreen = ({ navigation }) => {
           >
             <View style={styles.headerLeft}>
               <Text style={[styles.greeting, { color: theme.textMuted }]}>Welcome back,</Text>
-              <Text style={[styles.userName, { color: theme.text }]}>{userProfile.name}</Text>
+              <Text style={[styles.userName, { color: theme.text }]}>{user?.name || 'User'}</Text>
             </View>
             <TouchableOpacity
               onPress={() => setShowSearchModal(true)}
@@ -379,8 +536,9 @@ const ConversationListScreen = ({ navigation }) => {
             {quickActions.map((action, index) => (
               <TouchableOpacity
                 key={index}
-                onPress={handleNewChat}
+                onPress={() => handleQuickAction(action)}
                 activeOpacity={0.7}
+                style={styles.quickCardWrapper}
               >
                 <GlassContainer style={styles.quickCard}>
                   <LinearGradient
@@ -655,157 +813,282 @@ const ConversationListScreen = ({ navigation }) => {
           activeOpacity={1}
           onPress={() => setShowChatMenu(false)}
         >
-          {Platform.OS === 'web' ? (
-            <View style={[styles.chatMenuModal, styles.chatMenuGlass, { backgroundColor: theme.glass, borderColor: theme.glassBorder }]}>
-              <View style={[styles.chatMenuHandle, { backgroundColor: theme.glassHighlight }]} />
+          <View style={[
+            styles.chatMenuModal,
+            {
+              backgroundColor: Platform.OS === 'web'
+                ? 'rgba(15, 15, 25, 0.85)'
+                : theme.glass,
+              borderColor: theme.glassBorder,
+              borderWidth: 1,
+              backdropFilter: 'blur(40px)',
+              WebkitBackdropFilter: 'blur(40px)',
+              shadowColor: theme.shadowColor,
+              shadowOffset: { width: 0, height: 16 },
+              shadowOpacity: 0.4,
+              shadowRadius: 24,
+              elevation: 20,
+            }
+          ]}>
+            {/* Handle bar */}
+            <View style={[styles.chatMenuHandle, { backgroundColor: theme.glassHighlight }]} />
 
-              {selectedChat && (
-                <>
-                  <View style={styles.chatMenuHeader}>
-                    <LinearGradient
-                      colors={[theme.gradient1, theme.gradient2]}
-                      style={[styles.chatMenuIcon, styles.iconGlow]}
-                    >
-                      {(() => {
-                        const IconComp = iconMap[selectedChat.icon] || Bot;
-                        return <IconComp size={20} color="#FFFFFF" />;
-                      })()}
-                    </LinearGradient>
-                    <Text style={[styles.chatMenuTitle, { color: theme.text }]} numberOfLines={1}>
-                      {selectedChat.name}
-                    </Text>
+            {selectedChat && (
+              <>
+                {/* Chat header */}
+                <View style={styles.chatMenuHeader}>
+                  <LinearGradient
+                    colors={[theme.gradient1, theme.gradient2]}
+                    style={[styles.chatMenuIcon, styles.iconGlow]}
+                  >
+                    {(() => {
+                      const IconComp = iconMap[selectedChat.icon] || Bot;
+                      return <IconComp size={20} color="#FFFFFF" />;
+                    })()}
+                  </LinearGradient>
+                  <Text style={[styles.chatMenuTitle, { color: theme.text }]} numberOfLines={1}>
+                    {selectedChat.name}
+                  </Text>
+                </View>
+
+                {/* Divider */}
+                <View style={{ height: 1, backgroundColor: theme.glassBorder, marginVertical: 12 }} />
+
+                {/* Action items */}
+                <TouchableOpacity
+                  style={[styles.chatMenuActionRow, { backgroundColor: `${theme.primary}10` }]}
+                  onPress={handlePinChat}
+                >
+                  <View style={[styles.chatMenuActionIconSmall, { backgroundColor: `${theme.primary}25` }]}>
+                    <Pin size={16} color={theme.primary} />
                   </View>
+                  <Text style={[styles.chatMenuActionText, { color: theme.text }]}>
+                    {selectedChat.isPinned ? 'Unpin Chat' : 'Pin Chat'}
+                  </Text>
+                </TouchableOpacity>
 
-                  <View style={styles.chatMenuActions}>
-                    <TouchableOpacity
-                      style={[styles.chatMenuAction, { backgroundColor: theme.glass, borderColor: theme.glassBorder, borderWidth: 1 }]}
-                      onPress={handlePinChat}
-                    >
-                      <LinearGradient
-                        colors={[theme.gradient1, theme.gradient2]}
-                        style={[styles.chatMenuActionIcon, styles.iconGlow]}
-                      >
-                        <Pin size={18} color="#FFFFFF" />
-                      </LinearGradient>
-                      <Text style={[styles.chatMenuActionText, { color: theme.text }]}>
-                        {selectedChat.isPinned ? 'Unpin' : 'Pin'}
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.chatMenuAction, { backgroundColor: theme.glass, borderColor: theme.glassBorder, borderWidth: 1 }]}
-                      onPress={handleMuteChat}
-                    >
-                      <LinearGradient
-                        colors={[theme.gradient1, theme.gradient2]}
-                        style={[styles.chatMenuActionIcon, styles.iconGlow]}
-                      >
-                        {mutedChats.includes(selectedChat.id) ? (
-                          <Bell size={18} color="#FFFFFF" />
-                        ) : (
-                          <BellOff size={18} color="#FFFFFF" />
-                        )}
-                      </LinearGradient>
-                      <Text style={[styles.chatMenuActionText, { color: theme.text }]}>
-                        {mutedChats.includes(selectedChat.id) ? 'Unmute' : 'Mute'}
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={[styles.chatMenuAction, { backgroundColor: 'rgba(248, 113, 113, 0.15)', borderColor: 'rgba(248, 113, 113, 0.3)', borderWidth: 1 }]}
-                      onPress={handleDeleteChat}
-                    >
-                      <View style={[styles.chatMenuActionIcon, { backgroundColor: theme.error }]}>
-                        <Trash2 size={18} color="#FFFFFF" />
-                      </View>
-                      <Text style={[styles.chatMenuActionText, { color: theme.error }]}>
-                        Delete
-                      </Text>
-                    </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.chatMenuActionRow, { backgroundColor: `${theme.primary}10` }]}
+                  onPress={handleMuteChat}
+                >
+                  <View style={[styles.chatMenuActionIconSmall, { backgroundColor: `${theme.primary}25` }]}>
+                    {mutedChats.includes(selectedChat.id) ? (
+                      <Bell size={16} color={theme.primary} />
+                    ) : (
+                      <BellOff size={16} color={theme.primary} />
+                    )}
                   </View>
-                </>
-              )}
-            </View>
-          ) : (
-            <BlurView
-              intensity={40}
-              tint={theme.background === '#0A0A0F' ? 'dark' : 'light'}
-              style={[styles.chatMenuModal, styles.chatMenuGlass]}
-            >
-              <View style={[styles.chatMenuInner, { borderColor: theme.glassBorder }]}>
-                <View style={[styles.chatMenuHandle, { backgroundColor: theme.glassHighlight }]} />
+                  <Text style={[styles.chatMenuActionText, { color: theme.text }]}>
+                    {mutedChats.includes(selectedChat.id) ? 'Unmute Chat' : 'Mute Chat'}
+                  </Text>
+                </TouchableOpacity>
 
-                {selectedChat && (
-                  <>
-                    <View style={styles.chatMenuHeader}>
-                      <LinearGradient
-                        colors={[theme.gradient1, theme.gradient2]}
-                        style={[styles.chatMenuIcon, styles.iconGlow]}
-                      >
-                        {(() => {
-                          const IconComp = iconMap[selectedChat.icon] || Bot;
-                          return <IconComp size={20} color="#FFFFFF" />;
-                        })()}
-                      </LinearGradient>
-                      <Text style={[styles.chatMenuTitle, { color: theme.text }]} numberOfLines={1}>
-                        {selectedChat.name}
-                      </Text>
-                    </View>
-
-                    <View style={styles.chatMenuActions}>
-                      <TouchableOpacity
-                        style={[styles.chatMenuAction, { backgroundColor: theme.glass, borderColor: theme.glassBorder, borderWidth: 1 }]}
-                        onPress={handlePinChat}
-                      >
-                        <LinearGradient
-                          colors={[theme.gradient1, theme.gradient2]}
-                          style={[styles.chatMenuActionIcon, styles.iconGlow]}
-                        >
-                          <Pin size={18} color="#FFFFFF" />
-                        </LinearGradient>
-                        <Text style={[styles.chatMenuActionText, { color: theme.text }]}>
-                          {selectedChat.isPinned ? 'Unpin' : 'Pin'}
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[styles.chatMenuAction, { backgroundColor: theme.glass, borderColor: theme.glassBorder, borderWidth: 1 }]}
-                        onPress={handleMuteChat}
-                      >
-                        <LinearGradient
-                          colors={[theme.gradient1, theme.gradient2]}
-                          style={[styles.chatMenuActionIcon, styles.iconGlow]}
-                        >
-                          {mutedChats.includes(selectedChat.id) ? (
-                            <Bell size={18} color="#FFFFFF" />
-                          ) : (
-                            <BellOff size={18} color="#FFFFFF" />
-                          )}
-                        </LinearGradient>
-                        <Text style={[styles.chatMenuActionText, { color: theme.text }]}>
-                          {mutedChats.includes(selectedChat.id) ? 'Unmute' : 'Mute'}
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[styles.chatMenuAction, { backgroundColor: 'rgba(248, 113, 113, 0.15)', borderColor: 'rgba(248, 113, 113, 0.3)', borderWidth: 1 }]}
-                        onPress={handleDeleteChat}
-                      >
-                        <View style={[styles.chatMenuActionIcon, { backgroundColor: theme.error }]}>
-                          <Trash2 size={18} color="#FFFFFF" />
-                        </View>
-                        <Text style={[styles.chatMenuActionText, { color: theme.error }]}>
-                          Delete
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  </>
-                )}
-              </View>
-            </BlurView>
-          )}
+                <TouchableOpacity
+                  style={[styles.chatMenuActionRow, { backgroundColor: 'rgba(248, 113, 113, 0.08)' }]}
+                  onPress={() => handleDeleteChat()}
+                >
+                  <View style={[styles.chatMenuActionIconSmall, { backgroundColor: 'rgba(248, 113, 113, 0.2)' }]}>
+                    <Trash2 size={16} color="#F87171" />
+                  </View>
+                  <Text style={[styles.chatMenuActionText, { color: '#F87171' }]}>
+                    Delete Chat
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
         </TouchableOpacity>
       </Modal>
+
+      {/* New Chat Modal - Glass Style */}
+      <Modal
+        visible={showNewChatModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowNewChatModal(false)}
+      >
+        <View style={styles.newChatOverlay}>
+          <ScrollView contentContainerStyle={styles.newChatScrollContent} showsVerticalScrollIndicator={false}>
+            {Platform.OS === 'web' ? (
+              <View style={[styles.newChatModal, styles.newChatModalGlass, { borderColor: theme.glassBorder }]}>
+                <View style={[styles.modalHandle, { backgroundColor: theme.glassHighlight }]} />
+                <Text style={[styles.newChatTitle, { color: theme.text }]}>Create New Chat</Text>
+
+                <Text style={[styles.inputLabel, { color: theme.textSecondary }]}>Chat Name</Text>
+                <TextInput
+                  style={[styles.newChatInput, styles.newChatInputGlass, { borderColor: theme.glassBorder, color: theme.text }]}
+                  placeholder="Enter chat name..."
+                  placeholderTextColor={theme.placeholder}
+                  value={newChatName}
+                  onChangeText={setNewChatName}
+                />
+
+                <Text style={[styles.inputLabel, { color: theme.textSecondary }]}>Select AI Personality</Text>
+                <View style={styles.promptTemplatesGrid}>
+                  {promptTemplates.map((template) => {
+                    const TemplateIcon = iconMap[template.icon] || Bot;
+                    const isSelected = selectedPromptId === template.id;
+                    return (
+                      <TouchableOpacity
+                        key={template.id}
+                        style={[
+                          styles.promptTemplateCard,
+                          styles.promptTemplateCardGlass,
+                          { borderColor: isSelected ? template.color : theme.glassBorder },
+                          isSelected && { borderWidth: 2, backgroundColor: `${template.color}15` },
+                        ]}
+                        onPress={() => setSelectedPromptId(template.id)}
+                        activeOpacity={0.7}
+                      >
+                        {isSelected && (
+                          <View style={[styles.promptTemplateCheck, { backgroundColor: template.color }]}>
+                            <Text style={styles.promptTemplateCheckText}>✓</Text>
+                          </View>
+                        )}
+                        <TemplateIcon size={28} color={isSelected ? template.color : theme.textSecondary} />
+                        <Text style={[styles.promptTemplateName, { color: isSelected ? template.color : theme.text }]}>
+                          {template.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {selectedPromptId === 'custom' && (
+                  <>
+                    <Text style={[styles.inputLabel, { color: theme.textSecondary, marginTop: 8 }]}>Custom Instructions</Text>
+                    <TextInput
+                      style={[styles.newChatInput, styles.newChatInputGlass, styles.newChatPromptInput, { borderColor: theme.glassBorder, color: theme.text }]}
+                      placeholder="Enter custom instructions for the AI..."
+                      placeholderTextColor={theme.placeholder}
+                      value={newChatPrompt}
+                      onChangeText={setNewChatPrompt}
+                      multiline
+                      numberOfLines={4}
+                    />
+                  </>
+                )}
+
+                <View style={styles.newChatButtons}>
+                  <TouchableOpacity
+                    style={[styles.newChatBtn, styles.newChatBtnGlass, { borderColor: theme.glassBorder }]}
+                    onPress={() => setShowNewChatModal(false)}
+                  >
+                    <Text style={[styles.newChatBtnText, { color: theme.text }]}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.newChatBtnWrapper}
+                    onPress={handleCreateChat}
+                    activeOpacity={0.8}
+                  >
+                    <LinearGradient
+                      colors={[theme.gradient1, theme.gradient2]}
+                      style={styles.newChatBtnGradient}
+                    >
+                      <Text style={[styles.newChatBtnText, { color: '#FFFFFF' }]}>Create</Text>
+                    </LinearGradient>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <BlurView
+                intensity={60}
+                tint={theme.background === '#0A0A0F' ? 'dark' : 'light'}
+                style={[styles.newChatModal, styles.newChatModalBlur]}
+              >
+                <View style={[styles.newChatModalInner, { borderColor: theme.glassBorder }]}>
+                  <View style={[styles.modalHandle, { backgroundColor: theme.glassHighlight }]} />
+                  <Text style={[styles.newChatTitle, { color: theme.text }]}>Create New Chat</Text>
+
+                  <Text style={[styles.inputLabel, { color: theme.textSecondary }]}>Chat Name</Text>
+                  <TextInput
+                    style={[styles.newChatInput, { backgroundColor: 'rgba(255,255,255,0.1)', borderColor: theme.glassBorder, color: theme.text }]}
+                    placeholder="Enter chat name..."
+                    placeholderTextColor={theme.placeholder}
+                    value={newChatName}
+                    onChangeText={setNewChatName}
+                  />
+
+                  <Text style={[styles.inputLabel, { color: theme.textSecondary }]}>Select AI Personality</Text>
+                  <View style={styles.promptTemplatesGrid}>
+                    {promptTemplates.map((template) => {
+                      const TemplateIcon = iconMap[template.icon] || Bot;
+                      const isSelected = selectedPromptId === template.id;
+                      return (
+                        <TouchableOpacity
+                          key={template.id}
+                          style={[
+                            styles.promptTemplateCard,
+                            { backgroundColor: isSelected ? `${template.color}15` : 'rgba(255,255,255,0.08)', borderColor: isSelected ? template.color : theme.glassBorder },
+                            isSelected && { borderWidth: 2 },
+                          ]}
+                          onPress={() => setSelectedPromptId(template.id)}
+                          activeOpacity={0.7}
+                        >
+                          {isSelected && (
+                            <View style={[styles.promptTemplateCheck, { backgroundColor: template.color }]}>
+                              <Text style={styles.promptTemplateCheckText}>✓</Text>
+                            </View>
+                          )}
+                          <TemplateIcon size={28} color={isSelected ? template.color : theme.textSecondary} />
+                          <Text style={[styles.promptTemplateName, { color: isSelected ? template.color : theme.text }]}>
+                            {template.name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  {selectedPromptId === 'custom' && (
+                    <>
+                      <Text style={[styles.inputLabel, { color: theme.textSecondary, marginTop: 8 }]}>Custom Instructions</Text>
+                      <TextInput
+                        style={[styles.newChatInput, styles.newChatPromptInput, { backgroundColor: 'rgba(255,255,255,0.1)', borderColor: theme.glassBorder, color: theme.text }]}
+                        placeholder="Enter custom instructions for the AI..."
+                        placeholderTextColor={theme.placeholder}
+                        value={newChatPrompt}
+                        onChangeText={setNewChatPrompt}
+                        multiline
+                        numberOfLines={4}
+                      />
+                    </>
+                  )}
+
+                  <View style={styles.newChatButtons}>
+                    <TouchableOpacity
+                      style={[styles.newChatBtn, styles.newChatBtnGlass, { borderColor: theme.glassBorder }]}
+                      onPress={() => setShowNewChatModal(false)}
+                    >
+                      <Text style={[styles.newChatBtnText, { color: theme.text }]}>Cancel</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.newChatBtnWrapper}
+                      onPress={handleCreateChat}
+                      activeOpacity={0.8}
+                    >
+                      <LinearGradient
+                        colors={[theme.gradient1, theme.gradient2]}
+                        style={styles.newChatBtnGradient}
+                      >
+                        <Text style={[styles.newChatBtnText, { color: '#FFFFFF' }]}>Create</Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </BlurView>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
+
+      <CustomAlert
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        type={alertConfig.type}
+        buttons={alertConfig.buttons}
+        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
     </View>
   );
 };
@@ -813,9 +1096,11 @@ const ConversationListScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    overflow: 'hidden',
   },
   safeArea: {
     flex: 1,
+    width: '100%',
   },
   // Ambient background for glass effect
   ambientBackground: {
@@ -828,28 +1113,29 @@ const styles = StyleSheet.create({
   },
   ambientGradient1: {
     position: 'absolute',
-    top: -100,
-    left: -100,
-    width: 300,
-    height: 300,
-    borderRadius: 150,
+    top: scale(-100),
+    left: scale(-100),
+    width: scale(300),
+    height: scale(300),
+    borderRadius: scale(150),
     opacity: 0.6,
   },
   ambientGradient2: {
     position: 'absolute',
-    top: 200,
-    right: -100,
-    width: 250,
-    height: 250,
-    borderRadius: 125,
+    top: scale(200),
+    right: scale(-100),
+    width: scale(250),
+    height: scale(250),
+    borderRadius: scale(125),
     opacity: 0.4,
   },
   scrollContent: {
-    paddingBottom: 120,
+    paddingBottom: scale(120),
+    paddingHorizontal: scale(4),
   },
   // Glass card styles
   glassCard: {
-    borderRadius: 20,
+    borderRadius: scale(20),
     overflow: 'hidden',
   },
   glassCardWeb: {
@@ -865,36 +1151,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 20,
+    paddingHorizontal: scale(24),
+    paddingTop: scale(16),
+    paddingBottom: scale(24),
   },
   headerLeft: {
     flex: 1,
   },
   greeting: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     fontWeight: '500',
   },
   userName: {
-    fontSize: 18,
+    fontSize: moderateScale(18),
     fontWeight: '700',
   },
   searchBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: scale(46),
+    height: scale(46),
+    borderRadius: scale(23),
     alignItems: 'center',
     justifyContent: 'center',
     padding: 0,
   },
   heroSection: {
-    paddingHorizontal: 20,
-    marginBottom: 28,
+    paddingHorizontal: scale(24),
+    marginBottom: scale(32),
   },
   heroCard: {
-    borderRadius: 24,
-    padding: 24,
+    borderRadius: scale(24),
+    padding: scale(24),
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -906,21 +1192,21 @@ const styles = StyleSheet.create({
   },
   heroGlow: {
     shadowColor: '#A78BFA',
-    shadowOffset: { width: 0, height: 8 },
+    shadowOffset: { width: 0, height: scale(8) },
     shadowOpacity: 0.5,
-    shadowRadius: 20,
+    shadowRadius: scale(20),
     elevation: 15,
   },
   heroContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    gap: scale(16),
     flex: 1,
   },
   heroIconWrap: {
-    width: 56,
-    height: 56,
-    borderRadius: 18,
+    width: scale(56),
+    height: scale(56),
+    borderRadius: scale(18),
     backgroundColor: 'rgba(255,255,255,0.2)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -929,37 +1215,37 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   heroTitle: {
-    fontSize: 20,
+    fontSize: moderateScale(20),
     fontWeight: '700',
     color: '#FFFFFF',
-    marginBottom: 4,
+    marginBottom: scale(4),
   },
   heroSubtitle: {
-    fontSize: 14,
+    fontSize: moderateScale(14),
     color: 'rgba(255,255,255,0.8)',
   },
   heroButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: scale(48),
+    height: scale(48),
+    borderRadius: scale(24),
     backgroundColor: 'rgba(255,255,255,0.25)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   filterSection: {
-    paddingHorizontal: 20,
-    marginBottom: 24,
+    paddingHorizontal: scale(24),
+    marginBottom: scale(28),
   },
   filterScroll: {
-    gap: 10,
+    gap: scale(12),
   },
   filterTab: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    gap: 8,
+    paddingHorizontal: scale(16),
+    paddingVertical: scale(10),
+    borderRadius: scale(20),
+    gap: scale(8),
   },
   filterTabGlass: {
     borderWidth: 1,
@@ -969,118 +1255,124 @@ const styles = StyleSheet.create({
   },
   filterGlow: {
     shadowColor: '#A78BFA',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: scale(4) },
     shadowOpacity: 0.4,
-    shadowRadius: 10,
+    shadowRadius: scale(10),
     elevation: 8,
   },
   filterText: {
-    fontSize: 14,
+    fontSize: moderateScale(14),
     fontWeight: '600',
   },
   filterTextActive: {
-    fontSize: 14,
+    fontSize: moderateScale(14),
     fontWeight: '600',
     color: '#FFFFFF',
   },
   filterCount: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
+    paddingHorizontal: scale(8),
+    paddingVertical: scale(2),
+    borderRadius: scale(10),
   },
   filterCountActive: {
     backgroundColor: 'rgba(255,255,255,0.25)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
+    paddingHorizontal: scale(8),
+    paddingVertical: scale(2),
+    borderRadius: scale(10),
   },
   filterCountText: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     fontWeight: '600',
   },
   filterCountTextActive: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     fontWeight: '600',
     color: '#FFFFFF',
   },
   quickSection: {
-    paddingHorizontal: 20,
-    marginBottom: 28,
+    paddingHorizontal: scale(24),
+    marginBottom: scale(32),
   },
   sectionTitle: {
-    fontSize: 18,
+    fontSize: moderateScale(18),
     fontWeight: '700',
-    marginBottom: 16,
+    marginBottom: scale(16),
   },
   sectionTitleNoBtm: {
-    fontSize: 18,
+    fontSize: moderateScale(18),
     fontWeight: '700',
   },
   quickGrid: {
     flexDirection: 'row',
-    gap: 12,
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: scale(10),
+  },
+  quickCardWrapper: {
+    width: '31.5%',
   },
   quickCard: {
-    flex: 1,
+    width: '100%',
     alignItems: 'center',
-    gap: 12,
-    borderRadius: 18,
+    paddingVertical: scale(14),
+    gap: scale(10),
+    borderRadius: scale(16),
   },
   iconGlow: {
     shadowColor: '#A78BFA',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: scale(4) },
     shadowOpacity: 0.4,
-    shadowRadius: 8,
+    shadowRadius: scale(8),
     elevation: 6,
   },
   quickIconWrap: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
+    width: scale(48),
+    height: scale(48),
+    borderRadius: scale(14),
     alignItems: 'center',
     justifyContent: 'center',
   },
   quickLabel: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     fontWeight: '600',
   },
   recentSection: {
-    paddingHorizontal: 20,
-    marginBottom: 28,
+    paddingHorizontal: scale(24),
+    marginBottom: scale(32),
   },
   sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: scale(16),
   },
   seeAll: {
-    fontSize: 14,
+    fontSize: moderateScale(14),
     fontWeight: '600',
   },
   sectionTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 16,
+    gap: scale(8),
+    marginBottom: scale(16),
   },
   chatCard: {
-    borderRadius: 18,
-    marginBottom: 12,
+    borderRadius: scale(18),
+    marginBottom: scale(12),
   },
   chatCardInner: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 14,
-    gap: 14,
+    padding: scale(14),
+    gap: scale(14),
   },
   chatIconWrapper: {
     position: 'relative',
   },
   chatIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 16,
+    width: scale(50),
+    height: scale(50),
+    borderRadius: scale(16),
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1088,9 +1380,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 0,
     right: 0,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    width: scale(14),
+    height: scale(14),
+    borderRadius: scale(7),
     backgroundColor: '#22C55E',
     borderWidth: 2,
   },
@@ -1100,94 +1392,106 @@ const styles = StyleSheet.create({
   chatNameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 4,
+    gap: scale(6),
+    marginBottom: scale(4),
   },
   chatName: {
-    fontSize: 16,
+    fontSize: moderateScale(16),
     fontWeight: '600',
     flex: 1,
   },
   chatMessage: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
   },
   chatMeta: {
     alignItems: 'flex-end',
-    gap: 8,
+    gap: scale(6),
+  },
+  chatActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(6),
+  },
+  deleteBtn: {
+    width: scale(28),
+    height: scale(28),
+    borderRadius: scale(8),
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   chatTime: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
     fontWeight: '500',
   },
   unreadBadge: {
-    minWidth: 22,
-    height: 22,
-    borderRadius: 11,
+    minWidth: scale(22),
+    height: scale(22),
+    borderRadius: scale(11),
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: scale(6),
   },
   badgeGlow: {
     shadowColor: '#A78BFA',
-    shadowOffset: { width: 0, height: 2 },
+    shadowOffset: { width: 0, height: scale(2) },
     shadowOpacity: 0.5,
-    shadowRadius: 6,
+    shadowRadius: scale(6),
     elevation: 4,
   },
   unreadText: {
     color: '#FFFFFF',
-    fontSize: 11,
+    fontSize: moderateScale(11),
     fontWeight: '700',
   },
   capabilitiesSection: {
-    paddingHorizontal: 20,
-    marginBottom: 24,
+    paddingHorizontal: scale(24),
+    marginBottom: scale(32),
   },
   capabilitiesGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: scale(12),
   },
   capabilityCard: {
-    width: '47%',
-    borderRadius: 18,
-    gap: 10,
+    width: screenWidth >= 768 ? '30%' : '47%',
+    borderRadius: scale(18),
+    gap: scale(10),
   },
   capabilityIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
+    width: scale(44),
+    height: scale(44),
+    borderRadius: scale(14),
     alignItems: 'center',
     justifyContent: 'center',
   },
   capabilityTitle: {
-    fontSize: 15,
+    fontSize: moderateScale(15),
     fontWeight: '600',
   },
   capabilityDesc: {
-    fontSize: 12,
+    fontSize: moderateScale(12),
   },
   modalOverlay: {
     flex: 1,
   },
   modalContent: {
     flex: 1,
-    paddingHorizontal: 20,
+    paddingHorizontal: scale(24),
   },
   searchHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 16,
-    gap: 12,
+    paddingVertical: scale(16),
+    gap: scale(12),
   },
   searchInputWrap: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    height: 50,
-    borderRadius: 25,
-    gap: 12,
+    paddingHorizontal: scale(16),
+    height: scale(50),
+    borderRadius: scale(25),
+    gap: scale(12),
     borderWidth: 1,
   },
   glassInput: {
@@ -1195,7 +1499,7 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    fontSize: 16,
+    fontSize: moderateScale(16),
     padding: 0,
   },
   cancelBtn: {
@@ -1256,68 +1560,203 @@ const styles = StyleSheet.create({
   },
   chatMenuOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   chatMenuModal: {
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    borderRadius: 24,
     overflow: 'hidden',
-  },
-  chatMenuGlass: {
-    borderTopWidth: 1,
-  },
-  chatMenuInner: {
-    padding: 24,
-    paddingBottom: 40,
-    borderTopWidth: 1,
+    padding: 20,
+    paddingBottom: 24,
+    marginHorizontal: 20,
+    maxWidth: 340,
+    width: '100%',
+    alignSelf: 'center',
   },
   chatMenuHandle: {
-    width: 40,
+    width: 36,
     height: 4,
     borderRadius: 2,
     alignSelf: 'center',
-    marginBottom: 20,
+    marginBottom: 16,
   },
   chatMenuHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 14,
-    marginBottom: 24,
-  },
-  chatMenuIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  chatMenuTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    flex: 1,
-  },
-  chatMenuActions: {
-    flexDirection: 'row',
     gap: 12,
   },
-  chatMenuAction: {
-    flex: 1,
-    alignItems: 'center',
-    padding: 16,
-    borderRadius: 16,
-    gap: 10,
-  },
-  chatMenuActionIcon: {
+  chatMenuIcon: {
     width: 44,
     height: 44,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  chatMenuTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    flex: 1,
+  },
+  chatMenuActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    marginTop: 6,
+  },
+  chatMenuActionIconSmall: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   chatMenuActionText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  // New Chat Modal styles - Glass Style
+  newChatOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  newChatScrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 40,
+  },
+  newChatModal: {
+    width: '100%',
+    maxWidth: 400,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  newChatModalGlass: {
+    backgroundColor: 'rgba(25, 25, 35, 0.95)',
+    backdropFilter: 'blur(40px)',
+    WebkitBackdropFilter: 'blur(40px)',
+    borderWidth: 1,
+    paddingHorizontal: 24,
+    paddingVertical: 24,
+  },
+  newChatModalBlur: {
+    borderRadius: 20,
+  },
+  newChatModalInner: {
+    paddingHorizontal: 24,
+    paddingVertical: 24,
+    borderWidth: 1,
+    borderRadius: 20,
+  },
+  modalHandle: {
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 20,
+  },
+  newChatTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  inputLabel: {
     fontSize: 14,
     fontWeight: '600',
+    marginBottom: 10,
+    marginLeft: 4,
+  },
+  newChatInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 16,
+    marginBottom: 20,
+  },
+  newChatInputGlass: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  newChatPromptInput: {
+    height: 100,
+    textAlignVertical: 'top',
+    paddingTop: 14,
+  },
+  promptTemplatesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginBottom: 24,
+  },
+  promptTemplateCard: {
+    width: '48%',
+    alignItems: 'center',
+    paddingVertical: 20,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginBottom: 12,
+    gap: 10,
+  },
+  promptTemplateCardGlass: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  promptTemplateName: {
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  promptTemplateCheck: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  promptTemplateCheckText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  newChatButtons: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
+  newChatBtn: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  newChatBtnWrapper: {
+    flex: 1,
+  },
+  newChatBtnGlass: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+  },
+  newChatBtnGradient: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  newChatBtnText: {
+    fontSize: 16,
+    fontWeight: '700',
   },
 });
 

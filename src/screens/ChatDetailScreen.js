@@ -12,6 +12,8 @@ import {
   Animated,
   Modal,
   Alert,
+  Dimensions,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -62,34 +64,100 @@ const iconMap = {
 
 import ChatBubble from '../components/ChatBubble';
 import TypingIndicator from '../components/TypingIndicator';
+import CustomAlert from '../components/CustomAlert';
 import { useTheme } from '../context/ThemeContext';
+import { sendMessage, sendMessageStream, sendMessageWithImage, getChatById as fetchChatById } from '../services/api';
+import useResponsive from '../hooks/useResponsive';
+import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
+
+// Base dimensions for scaling (module-level for StyleSheet)
+const BASE_WIDTH = 393;
+const { width: screenWidth } = Dimensions.get('window');
+
+// Module-level scale functions for StyleSheet.create()
+const scale = (size) => {
+  const ratio = screenWidth / BASE_WIDTH;
+  const newSize = size * ratio;
+  const minScale = size * 0.7;
+  const maxScale = size * 1.5;
+  return Math.round(Math.min(Math.max(newSize, minScale), maxScale));
+};
+
+const moderateScale = (size, factor = 0.5) => {
+  const ratio = screenWidth / BASE_WIDTH;
+  const newSize = size + (size * ratio - size) * factor;
+  const minScale = size * 0.85;
+  const maxScale = size * 1.3;
+  return Math.round(Math.min(Math.max(newSize, minScale), maxScale));
+};
 
 const ChatDetailScreen = ({ route, navigation }) => {
   const { conversation } = route.params;
   const { theme } = useTheme();
+  const { width, getPadding, isTablet, isDesktop } = useResponsive();
   const [messages, setMessages] = useState(conversation.messages || []);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [streamingText, setStreamingText] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(true);
   const [showOptionsModal, setShowOptionsModal] = useState(false);
   const [showAttachModal, setShowAttachModal] = useState(false);
   const [showToolsModal, setShowToolsModal] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [useStreaming, setUseStreaming] = useState(true);
+  const [alertConfig, setAlertConfig] = useState({ visible: false, title: '', message: '', buttons: [], type: 'info' });
+  const [showScrollButton, setShowScrollButton] = useState(false);
   const flatListRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const hasInitialScrolled = useRef(false);
+  const scrollButtonAnim = useRef(new Animated.Value(0)).current;
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const emptyAnim = useRef(new Animated.Value(0)).current;
   const emptyScaleAnim = useRef(new Animated.Value(0.9)).current;
   const recordingAnim = useRef(new Animated.Value(1)).current;
 
+  // Consistent purple gradient theme across entire app
+  const topicTheme = {
+    gradient: [theme.gradient1, theme.gradient2],
+    accent: theme.primary,
+    ambient1: theme.gradientGlass1 || 'rgba(196, 181, 253, 0.3)',
+    ambient2: theme.gradientGlass2 || 'rgba(139, 92, 246, 0.3)',
+    glow: '#A78BFA',
+  };
+
+  // Load saved messages from backend on mount
   useEffect(() => {
+    const loadMessages = async () => {
+      if (conversation.id) {
+        const result = await fetchChatById(conversation.id);
+        if (result.chat && result.chat.messages && result.chat.messages.length > 0) {
+          const loaded = result.chat.messages.map(msg => ({
+            id: msg.id,
+            text: msg.text,
+            isUser: msg.is_user === 1 || msg.is_user === true,
+            time: msg.time || '',
+          }));
+          setMessages(loaded);
+          // Scroll to bottom after messages load with animation
+          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 200);
+        }
+      }
+    };
+    loadMessages();
+
     Animated.timing(headerAnim, {
       toValue: 1,
       duration: 400,
       useNativeDriver: true,
     }).start();
+  }, []);
 
+  // Show empty state animation when no messages
+  useEffect(() => {
     if (messages.length === 0) {
       Animated.parallel([
         Animated.timing(emptyAnim, {
@@ -107,7 +175,7 @@ const ChatDetailScreen = ({ route, navigation }) => {
         }),
       ]).start();
     }
-  }, []);
+  }, [messages.length]);
 
   useEffect(() => {
     if (isRecording) {
@@ -122,46 +190,189 @@ const ChatDetailScreen = ({ route, navigation }) => {
     }
   }, [isRecording]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = (animated = true) => {
     if (flatListRef.current && messages.length > 0) {
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated }), 100);
     }
   };
 
-  useEffect(() => { scrollToBottom(); }, [messages, isTyping]);
+  // Scroll to bottom whenever messages change
+  useEffect(() => {
+    if (messages.length > 0) {
+      if (!hasInitialScrolled.current) {
+        hasInitialScrolled.current = true;
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+      } else {
+        scrollToBottom();
+      }
+    }
+  }, [messages, isTyping]);
 
-  const simulateResponse = () => {
+  // Show/hide scroll-to-bottom button
+  useEffect(() => {
+    Animated.timing(scrollButtonAnim, {
+      toValue: showScrollButton ? 1 : 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+  }, [showScrollButton]);
+
+  const handleScroll = (event) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    setShowScrollButton(distanceFromBottom > 150);
+  };
+
+  const handleScrollToBottom = () => {
+    flatListRef.current?.scrollToEnd({ animated: true });
+    setShowScrollButton(false);
+  };
+
+  const getAIResponse = async (userMessage, imageBase64 = null) => {
     setIsTyping(true);
     setShowSuggestions(false);
-    setTimeout(() => {
+    setStreamingText('');
+
+    const aiMessageId = `ai-${Date.now()}`;
+
+    try {
+      // Use streaming if enabled and no image (streaming with image can be slower)
+      if (useStreaming && Platform.OS === 'web' && !imageBase64) {
+        // Add placeholder message for streaming
+        const placeholderMessage = {
+          id: aiMessageId,
+          text: '',
+          isUser: false,
+          isStreaming: true,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        setMessages((prev) => [...prev, placeholderMessage]);
+        setIsTyping(false); // Hide TypingIndicator since streaming bubble handles it
+
+        // Stream response
+        const result = await sendMessageStream(
+          userMessage,
+          messages,
+          conversation.systemPrompt || '',
+          conversation.id,
+          (chunk, fullText) => {
+            // Update the streaming message
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === aiMessageId ? { ...msg, text: fullText } : msg
+              )
+            );
+            setStreamingText(fullText);
+          }
+        );
+
+        setIsTyping(false);
+
+        if (result.error) {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === aiMessageId
+                ? { ...msg, text: result.error, isStreaming: false, isError: true }
+                : msg
+            )
+          );
+          return;
+        }
+
+        // Mark streaming as complete
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === aiMessageId
+              ? { ...msg, text: result.response, isStreaming: false }
+              : msg
+          )
+        );
+      } else {
+        // Non-streaming request (with image support)
+        let result;
+        if (imageBase64) {
+          result = await sendMessageWithImage(
+            userMessage,
+            imageBase64,
+            messages,
+            conversation.systemPrompt || '',
+            conversation.id
+          );
+        } else {
+          result = await sendMessage(
+            userMessage,
+            messages,
+            conversation.systemPrompt || '',
+            conversation.id
+          );
+        }
+
+        setIsTyping(false);
+
+        if (result.error) {
+          let errorText = 'Something went wrong. Please try again.';
+          const errorLower = result.error.toLowerCase();
+          if (errorLower.includes('rate') || errorLower.includes('limit') || errorLower.includes('quota') || errorLower.includes('429')) {
+            errorText = 'Rate limit reached. Please wait a moment and try again.';
+          } else if (errorLower.includes('fetch') || errorLower.includes('network') || errorLower.includes('connect')) {
+            errorText = 'Connection error. Please check your internet.';
+          }
+
+          const errorMessage = {
+            id: aiMessageId,
+            text: errorText,
+            isUser: false,
+            isError: true,
+            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          };
+          setMessages((prev) => [...prev, errorMessage]);
+          return;
+        }
+
+        // Add AI response to messages
+        const aiMessage = {
+          id: aiMessageId,
+          text: result.response,
+          isUser: false,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        };
+        setMessages((prev) => [...prev, aiMessage]);
+      }
+    } catch (error) {
       setIsTyping(false);
-      const responses = [
-        "That's a great question! Let me help you with that...",
-        "I understand what you're looking for. Here's my suggestion...",
-        "Great question! I'd recommend exploring these options...",
-        "I'm happy to help with that. Here's what I think...",
-      ];
-      const newMessage = {
-        id: Date.now().toString(),
-        text: responses[Math.floor(Math.random() * responses.length)],
+      const errorMessage = {
+        id: aiMessageId,
+        text: 'Connection error. Please check your internet.',
         isUser: false,
+        isError: true,
         time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
-      setMessages((prev) => [...prev, newMessage]);
-    }, 1500);
+      setMessages((prev) => [...prev, errorMessage]);
+    }
   };
 
   const handleSend = () => {
-    if (inputText.trim() === '') return;
+    if (inputText.trim() === '' && !selectedImage) return;
+    const userText = inputText.trim() || (selectedImage ? 'What do you see in this image?' : '');
+
     const newMessage = {
-      id: Date.now().toString(),
-      text: inputText.trim(),
+      id: `user-${Date.now()}`,
+      text: userText,
       isUser: true,
+      hasImage: !!selectedImage,
+      imageUri: selectedImage?.uri,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     setMessages((prev) => [...prev, newMessage]);
     setInputText('');
-    simulateResponse();
+
+    // Send with or without image
+    if (selectedImage) {
+      getAIResponse(userText, selectedImage.base64);
+      setSelectedImage(null);
+    } else {
+      getAIResponse(userText);
+    }
   };
 
   const handlePromptSelect = (text) => {
@@ -170,29 +381,150 @@ const ChatDetailScreen = ({ route, navigation }) => {
   };
 
   const handleVoiceInput = () => {
-    if (isRecording) {
-      setIsRecording(false);
-      setTimeout(() => setInputText('Voice transcription...'), 500);
-    } else {
-      setIsRecording(true);
-      setTimeout(() => {
+    // Use Web Speech API for web platform
+    if (Platform.OS === 'web') {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+      if (!SpeechRecognition) {
+        setAlertConfig({ visible: true, title: 'Not Supported', message: 'Speech recognition is not supported in this browser.', type: 'warning', buttons: [{ text: 'OK' }] });
+        return;
+      }
+
+      if (isRecording) {
+        // Stop recording
+        if (recognitionRef.current) {
+          recognitionRef.current.stop();
+        }
         setIsRecording(false);
-        setInputText('Voice transcription...');
-      }, 3000);
+      } else {
+        // Start recording
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        recognition.onstart = () => {
+          setIsRecording(true);
+        };
+
+        recognition.onresult = (event) => {
+          let transcript = '';
+          for (let i = 0; i < event.results.length; i++) {
+            transcript += event.results[i][0].transcript;
+          }
+          setInputText(transcript);
+        };
+
+        recognition.onerror = (event) => {
+          console.error('Speech recognition error:', event.error);
+          setIsRecording(false);
+          if (event.error === 'not-allowed') {
+            setAlertConfig({ visible: true, title: 'Permission Denied', message: 'Please allow microphone access to use voice input.', type: 'error', buttons: [{ text: 'OK' }] });
+          }
+        };
+
+        recognition.onend = () => {
+          setIsRecording(false);
+        };
+
+        recognitionRef.current = recognition;
+        recognition.start();
+      }
+    } else {
+      // For native platforms, show a message (would need expo-speech or similar)
+      setAlertConfig({ visible: true, title: 'Voice Input', message: 'Voice input requires microphone permission on mobile devices.', type: 'info', buttons: [{ text: 'OK' }] });
     }
   };
 
-  const handleAttachment = (type) => {
+  const handleAttachment = async (type) => {
     setShowAttachModal(false);
-    const msgs = { camera: '[Photo]', gallery: '[Image]', document: '[Document]' };
-    const newMessage = {
-      id: Date.now().toString(),
-      text: msgs[type] || '[Attachment]',
-      isUser: true,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-    setMessages((prev) => [...prev, newMessage]);
-    simulateResponse();
+
+    try {
+      let result;
+
+      if (type === 'camera') {
+        // Request camera permission
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') {
+          setAlertConfig({ visible: true, title: 'Permission Denied', message: 'Camera permission is required to take photos.', type: 'error', buttons: [{ text: 'OK' }] });
+          return;
+        }
+
+        result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          allowsEditing: true,
+          aspect: [4, 3],
+          quality: 0.7,
+          base64: true,
+        });
+      } else if (type === 'gallery') {
+        // Request gallery permission
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          setAlertConfig({ visible: true, title: 'Permission Denied', message: 'Gallery permission is required to select images.', type: 'error', buttons: [{ text: 'OK' }] });
+          return;
+        }
+
+        result = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+          allowsEditing: true,
+          aspect: [4, 3],
+          quality: 0.7,
+          base64: true,
+        });
+      } else if (type === 'document') {
+        // For documents, just show a message for now
+        setAlertConfig({ visible: true, title: 'Coming Soon', message: 'Document upload will be available in a future update.', type: 'info', buttons: [{ text: 'OK' }] });
+        return;
+      }
+
+      if (result && !result.canceled && result.assets && result.assets[0]) {
+        const asset = result.assets[0];
+        const base64Image = `data:image/jpeg;base64,${asset.base64}`;
+
+        // Store selected image
+        setSelectedImage({
+          uri: asset.uri,
+          base64: base64Image,
+        });
+
+        // Show preview in input or send immediately
+        setAlertConfig({
+          visible: true,
+          title: 'Image Selected',
+          message: 'What would you like to do with this image?',
+          type: 'info',
+          buttons: [
+            {
+              text: 'Cancel',
+              style: 'cancel',
+              onPress: () => setSelectedImage(null),
+            },
+            {
+              text: 'Ask AI About It',
+              onPress: () => {
+                const userMessage = inputText.trim() || 'What do you see in this image?';
+                const newMessage = {
+                  id: Date.now().toString(),
+                  text: userMessage,
+                  isUser: true,
+                  hasImage: true,
+                  imageUri: asset.uri,
+                  time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                };
+                setMessages((prev) => [...prev, newMessage]);
+                setInputText('');
+                getAIResponse(userMessage, base64Image);
+                setSelectedImage(null);
+              },
+            },
+          ],
+        });
+      }
+    } catch (error) {
+      console.error('Image picker error:', error);
+      setAlertConfig({ visible: true, title: 'Error', message: 'Failed to pick image. Please try again.', type: 'error', buttons: [{ text: 'OK' }] });
+    }
   };
 
   const handleTool = (tool) => {
@@ -210,61 +542,182 @@ const ChatDetailScreen = ({ route, navigation }) => {
     setShowOptionsModal(false);
     switch (option) {
       case 'clear':
-        Alert.alert('Clear Chat', 'Clear all messages?', [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Clear', style: 'destructive', onPress: () => setMessages([]) },
-        ]);
+        setAlertConfig({
+          visible: true,
+          title: 'Clear Chat',
+          message: 'Are you sure you want to clear all messages? This cannot be undone.',
+          type: 'warning',
+          buttons: [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Clear', onPress: () => setMessages([]) },
+          ],
+        });
         break;
       case 'mute':
         setIsMuted(!isMuted);
         break;
       default:
-        Alert.alert(option, `Action: ${option}`);
+        setAlertConfig({ visible: true, title: option, message: `Action: ${option}`, type: 'info', buttons: [{ text: 'OK' }] });
     }
   };
 
   const renderMessage = ({ item, index }) => (
-    <ChatBubble message={item.text} isUser={item.isUser} time={item.time} isLast={index === messages.length - 1} />
+    <ChatBubble
+      message={item.text}
+      isUser={item.isUser}
+      time={item.time}
+      isLast={index === messages.length - 1}
+      hasImage={item.hasImage}
+      imageUri={item.imageUri}
+      isStreaming={item.isStreaming}
+      isError={item.isError}
+      topicTheme={topicTheme}
+      topicIcon={conversation.icon}
+    />
   );
 
-  const quickPrompts = [
-    { icon: Wand2, text: 'Write a story', color: theme.primary },
-    { icon: Code2, text: 'Help me code', color: theme.secondary },
-    { icon: FileText, text: 'Summarize', color: theme.accent },
-    { icon: Sparkles, text: 'Creative ideas', color: theme.primary },
-  ];
+  // Topic-specific content
+  const getTopicContent = () => {
+    const icon = conversation.icon;
+    const topicMap = {
+      Code2: {
+        typingText: 'Coding...',
+        emptyTitle: 'Ready to Code',
+        emptySubtitle: 'Ask me to write, debug, or explain code',
+        placeholder: 'Describe what you want to code...',
+        prompts: [
+          { icon: Code2, text: 'Fix a bug', color: topicTheme.accent },
+          { icon: FileText, text: 'Write a function', color: topicTheme.accent },
+          { icon: Sparkles, text: 'Optimize code', color: topicTheme.gradient[1] },
+          { icon: Wand2, text: 'Explain code', color: topicTheme.gradient[1] },
+        ],
+        suggestions: ['Write a React component', 'Debug my code', 'Explain async/await', 'SQL query help'],
+      },
+      Palette: {
+        typingText: 'Creating...',
+        emptyTitle: 'Let\'s Create',
+        emptySubtitle: 'Ask me about design, art, or creative ideas',
+        placeholder: 'What should we create?',
+        prompts: [
+          { icon: Palette, text: 'Color palette', color: topicTheme.accent },
+          { icon: Wand2, text: 'Design ideas', color: topicTheme.accent },
+          { icon: Sparkles, text: 'UI inspiration', color: topicTheme.gradient[1] },
+          { icon: FileText, text: 'Brand guide', color: topicTheme.gradient[1] },
+        ],
+        suggestions: ['Design a logo concept', 'Color scheme ideas', 'UI layout tips', 'Font pairing'],
+      },
+      Calculator: {
+        typingText: 'Calculating...',
+        emptyTitle: 'Math & Numbers',
+        emptySubtitle: 'Ask me to solve equations, analyze data, or calculate',
+        placeholder: 'Enter a math problem...',
+        prompts: [
+          { icon: Calculator, text: 'Solve equation', color: topicTheme.accent },
+          { icon: BarChart3, text: 'Analyze data', color: topicTheme.accent },
+          { icon: FileText, text: 'Statistics', color: topicTheme.gradient[1] },
+          { icon: Sparkles, text: 'Formula help', color: topicTheme.gradient[1] },
+        ],
+        suggestions: ['Solve a quadratic equation', 'Calculate percentage', 'Statistics help', 'Convert units'],
+      },
+      Languages: {
+        typingText: 'Translating...',
+        emptyTitle: 'Language Helper',
+        emptySubtitle: 'Translate, learn grammar, or practice languages',
+        placeholder: 'Type something to translate...',
+        prompts: [
+          { icon: Languages, text: 'Translate text', color: topicTheme.accent },
+          { icon: FileText, text: 'Grammar check', color: topicTheme.accent },
+          { icon: GraduationCap, text: 'Learn phrases', color: topicTheme.gradient[1] },
+          { icon: Sparkles, text: 'Pronunciation', color: topicTheme.gradient[1] },
+        ],
+        suggestions: ['Translate to Spanish', 'Common Japanese phrases', 'English grammar rules', 'French vocabulary'],
+      },
+      BarChart3: {
+        typingText: 'Analyzing...',
+        emptyTitle: 'Data Analysis',
+        emptySubtitle: 'Analyze trends, create charts, or interpret data',
+        placeholder: 'What data do you want to analyze?',
+        prompts: [
+          { icon: BarChart3, text: 'Analyze trends', color: topicTheme.accent },
+          { icon: FileText, text: 'Create report', color: topicTheme.accent },
+          { icon: Calculator, text: 'Statistics', color: topicTheme.gradient[1] },
+          { icon: Sparkles, text: 'Visualize data', color: topicTheme.gradient[1] },
+        ],
+        suggestions: ['Analyze sales data', 'Create a chart', 'Statistical summary', 'Predict trends'],
+      },
+      GraduationCap: {
+        typingText: 'Thinking...',
+        emptyTitle: 'Study Buddy',
+        emptySubtitle: 'Learn new topics, get explanations, or study smarter',
+        placeholder: 'What do you want to learn?',
+        prompts: [
+          { icon: GraduationCap, text: 'Explain topic', color: topicTheme.accent },
+          { icon: FileText, text: 'Summarize', color: topicTheme.accent },
+          { icon: Sparkles, text: 'Quiz me', color: topicTheme.gradient[1] },
+          { icon: Wand2, text: 'Study tips', color: topicTheme.gradient[1] },
+        ],
+        suggestions: ['Explain quantum physics', 'History of Rome', 'Biology concepts', 'Study techniques'],
+      },
+      Wand2: {
+        typingText: 'Imagining...',
+        emptyTitle: 'Creative Writing',
+        emptySubtitle: 'Write stories, poems, or brainstorm creative ideas',
+        placeholder: 'What should I write about?',
+        prompts: [
+          { icon: Wand2, text: 'Write a story', color: topicTheme.accent },
+          { icon: FileText, text: 'Write a poem', color: topicTheme.accent },
+          { icon: Sparkles, text: 'Plot ideas', color: topicTheme.gradient[1] },
+          { icon: Bot, text: 'Character design', color: topicTheme.gradient[1] },
+        ],
+        suggestions: ['Write a short story', 'Create a poem', 'Story plot ideas', 'Character names'],
+      },
+      Mic: {
+        typingText: 'Composing...',
+        emptyTitle: 'Music & Audio',
+        emptySubtitle: 'Talk about music, lyrics, or audio production',
+        placeholder: 'Ask about music or lyrics...',
+        prompts: [
+          { icon: Mic, text: 'Write lyrics', color: topicTheme.accent },
+          { icon: Sparkles, text: 'Song ideas', color: topicTheme.accent },
+          { icon: FileText, text: 'Music theory', color: topicTheme.gradient[1] },
+          { icon: Wand2, text: 'Chord progression', color: topicTheme.gradient[1] },
+        ],
+        suggestions: ['Write song lyrics', 'Chord progressions', 'Music theory basics', 'Genre comparison'],
+      },
+    };
 
-  const suggestions = ["What can you do?", "Explain AI", "Write a poem", "Debug code"];
+    return topicMap[icon] || {
+      typingText: 'Thinking...',
+      emptyTitle: 'How can I help you?',
+      emptySubtitle: 'Start a conversation or choose a suggestion',
+      placeholder: 'Ask me anything...',
+      prompts: [
+        { icon: Wand2, text: 'Write a story', color: topicTheme.accent },
+        { icon: Code2, text: 'Help me code', color: topicTheme.gradient[1] },
+        { icon: FileText, text: 'Summarize', color: topicTheme.accent },
+        { icon: Sparkles, text: 'Creative ideas', color: topicTheme.gradient[1] },
+      ],
+      suggestions: ['What can you do?', 'Explain AI', 'Write a poem', 'Debug code'],
+    };
+  };
+
+  const topicContent = getTopicContent();
+  const quickPrompts = topicContent.prompts;
+  const suggestions = topicContent.suggestions;
   const IconComponent = iconMap[conversation.icon] || Sparkles;
   const iconColor = conversation.iconColor || theme.primary;
 
   const renderEmptyChat = () => (
     <Animated.View style={[styles.emptyContainer, { opacity: emptyAnim, transform: [{ scale: emptyScaleAnim }] }]}>
       <View style={styles.emptyIconWrap}>
-        <LinearGradient colors={[theme.gradient1, theme.gradient2]} style={styles.emptyIconGradient}>
-          <Sparkles size={44} color="#FFFFFF" />
+        <LinearGradient colors={topicTheme.gradient} style={[styles.emptyIconGradient, { shadowColor: topicTheme.glow }]}>
+          <IconComponent size={44} color="#FFFFFF" />
         </LinearGradient>
       </View>
-      <Text style={[styles.emptyTitle, { color: theme.text }]}>How can I help you?</Text>
+      <Text style={[styles.emptyTitle, { color: theme.text }]}>{topicContent.emptyTitle}</Text>
       <Text style={[styles.emptySubtitle, { color: theme.textSecondary }]}>
-        Start a conversation or choose a suggestion
+        {topicContent.emptySubtitle}
       </Text>
-
-      <View style={styles.quickPrompts}>
-        {quickPrompts.map((p, i) => (
-          <TouchableOpacity
-            key={i}
-            style={[styles.promptChip, styles.floatingCard, { backgroundColor: theme.surface }]}
-            onPress={() => handlePromptSelect(p.text)}
-            activeOpacity={0.8}
-          >
-            <LinearGradient colors={[`${p.color}30`, `${p.color}10`]} style={styles.promptIconBg}>
-              <p.icon size={18} color={p.color} />
-            </LinearGradient>
-            <Text style={[styles.promptText, { color: theme.text }]}>{p.text}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
 
       <View style={styles.suggestionsWrap}>
         <Text style={[styles.suggestLabel, { color: theme.textMuted }]}>Try asking:</Text>
@@ -287,7 +740,12 @@ const ChatDetailScreen = ({ route, navigation }) => {
     if (Platform.OS === 'web') {
       return (
         <TouchableOpacity
-          style={[styles.glassBtn, { backgroundColor: theme.glass, borderColor: theme.glassBorder }, style]}
+          style={[
+            styles.glassBtn,
+            styles.glassBtnWeb,
+            { borderColor: 'rgba(255, 255, 255, 0.15)' },
+            style
+          ]}
           onPress={onPress}
         >
           {children}
@@ -307,16 +765,16 @@ const ChatDetailScreen = ({ route, navigation }) => {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.background }]}>
-      {/* Ambient background for glass effect */}
+      {/* Ambient background - topic themed */}
       <View style={styles.ambientBackground}>
         <LinearGradient
-          colors={[theme.gradientGlass1 || 'rgba(167, 139, 250, 0.2)', 'transparent']}
+          colors={[topicTheme.ambient1, 'transparent']}
           style={styles.ambientGradient1}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
         />
         <LinearGradient
-          colors={[theme.gradientGlass2 || 'rgba(139, 92, 246, 0.15)', 'transparent']}
+          colors={[topicTheme.ambient2, 'transparent']}
           style={styles.ambientGradient2}
           start={{ x: 1, y: 1 }}
           end={{ x: 0, y: 0 }}
@@ -331,17 +789,17 @@ const ChatDetailScreen = ({ route, navigation }) => {
           </GlassButton>
 
           <View style={styles.headerCenter}>
-            <LinearGradient colors={[iconColor, `${iconColor}99`]} style={[styles.avatarBox, styles.glowIcon]}>
+            <LinearGradient colors={topicTheme.gradient} style={[styles.avatarBox, styles.glowIcon, { shadowColor: topicTheme.glow }]}>
               <IconComponent size={20} color="#FFFFFF" />
             </LinearGradient>
             <View>
               <Text style={[styles.headerTitle, { color: theme.text }]} numberOfLines={1}>{conversation.name}</Text>
               <View style={styles.statusRow}>
-                <View style={[styles.statusDot, { backgroundColor: theme.online }]} />
+                <View style={[styles.statusDot, { backgroundColor: topicTheme.accent }]} />
                 <Text style={[styles.statusText, { color: theme.textMuted }]}>Online</Text>
-                <View style={[styles.modelBadge, { backgroundColor: theme.primaryGlass || theme.primarySoft, borderColor: theme.glassBorder, borderWidth: 1 }]}>
-                  <Sparkles size={10} color={theme.primary} />
-                  <Text style={[styles.modelBadgeText, { color: theme.primary }]}>GPT-4</Text>
+                <View style={[styles.modelBadge, { backgroundColor: `${topicTheme.accent}20`, borderColor: `${topicTheme.accent}40`, borderWidth: 1 }]}>
+                  <Sparkles size={10} color={topicTheme.accent} />
+                  <Text style={[styles.modelBadgeText, { color: topicTheme.accent }]}>AI</Text>
                 </View>
               </View>
             </View>
@@ -360,25 +818,14 @@ const ChatDetailScreen = ({ route, navigation }) => {
           renderItem={renderMessage}
           keyExtractor={(item) => item.id}
           contentContainerStyle={[styles.messageList, messages.length === 0 && styles.emptyList]}
+          style={styles.flatListStyle}
           showsVerticalScrollIndicator={false}
-          onContentSizeChange={scrollToBottom}
-          ListFooterComponent={isTyping ? <TypingIndicator /> : null}
+          onScroll={handleScroll}
+          scrollEventThrottle={100}
+          onContentSizeChange={() => { if (messages.length > 0 && !showScrollButton) flatListRef.current?.scrollToEnd({ animated: true }); }}
+          ListFooterComponent={isTyping ? <TypingIndicator typingText={topicContent.typingText} topicGradient={topicTheme.gradient} topicGlow={topicTheme.glow} /> : null}
           ListEmptyComponent={renderEmptyChat}
         />
-
-        {showSuggestions && messages.length > 0 && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.suggestBar} contentContainerStyle={styles.suggestBarContent}>
-            {suggestions.slice(0, 3).map((s, i) => (
-              <TouchableOpacity
-                key={i}
-                style={[styles.suggestBarItem, styles.floatingSmall, { backgroundColor: theme.surface }]}
-                onPress={() => handlePromptSelect(s)}
-              >
-                <Text style={[styles.suggestBarText, { color: theme.text }]}>{s}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        )}
 
         {isRecording && (
           <Animated.View style={[styles.recordingWrap, { transform: [{ scale: recordingAnim }] }]}>
@@ -389,19 +836,41 @@ const ChatDetailScreen = ({ route, navigation }) => {
           </Animated.View>
         )}
 
+        {/* Selected Image Preview */}
+        {selectedImage && (
+          <View style={[styles.imagePreviewBar, { backgroundColor: theme.surface, borderColor: theme.glassBorder }]}>
+            <Image source={{ uri: selectedImage.uri }} style={styles.imagePreviewThumb} />
+            <Text style={[styles.imagePreviewText, { color: theme.text }]}>Image attached</Text>
+            <TouchableOpacity onPress={() => setSelectedImage(null)} style={styles.imagePreviewClose}>
+              <X size={18} color={theme.textMuted} />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Scroll to bottom button */}
+        {showScrollButton && (
+          <Animated.View style={[styles.scrollBottomBtn, { opacity: scrollButtonAnim, transform: [{ translateY: scrollButtonAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }) }] }]}>
+            <TouchableOpacity onPress={handleScrollToBottom} activeOpacity={0.8}>
+              <LinearGradient colors={[theme.gradient1, theme.gradient2]} style={styles.scrollBottomGradient}>
+                <Text style={styles.scrollBottomText}>New messages ↓</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+
         {/* Input - Glass Style */}
         <View style={styles.inputSection}>
           {Platform.OS === 'web' ? (
             <View style={[styles.inputGlass, { backgroundColor: theme.glass, borderColor: theme.glassBorder }]}>
               <View style={styles.inputWrapper}>
                 <TouchableOpacity style={[styles.inputIconBtn, styles.inputIconGlass, { backgroundColor: theme.glass, borderColor: theme.glassBorder }]} onPress={() => setShowToolsModal(true)}>
-                  <Zap size={20} color={theme.primary} />
+                  <Zap size={20} color={topicTheme.accent} />
                 </TouchableOpacity>
 
                 <View style={[styles.inputContainer, { backgroundColor: theme.glass, borderColor: theme.glassBorder }]}>
                   <TextInput
                     style={[styles.input, { color: theme.text }]}
-                    placeholder={isRecording ? "Listening..." : "Ask me anything..."}
+                    placeholder={isRecording ? "Listening..." : selectedImage ? "Ask about the image..." : topicContent.placeholder}
                     placeholderTextColor={theme.placeholder}
                     value={inputText}
                     onChangeText={setInputText}
@@ -409,13 +878,13 @@ const ChatDetailScreen = ({ route, navigation }) => {
                     editable={!isRecording}
                   />
                   <TouchableOpacity style={styles.inputAttachBtn} onPress={() => setShowAttachModal(true)}>
-                    <Paperclip size={18} color={theme.textSecondary} />
+                    <Paperclip size={18} color={selectedImage ? theme.primary : theme.textSecondary} />
                   </TouchableOpacity>
                 </View>
 
-                <TouchableOpacity onPress={inputText.trim() ? handleSend : handleVoiceInput} activeOpacity={0.8}>
-                  {inputText.trim() ? (
-                    <LinearGradient colors={[theme.gradient1, theme.gradient2]} style={[styles.sendBtn, styles.glowSend]}>
+                <TouchableOpacity onPress={(inputText.trim() || selectedImage) ? handleSend : handleVoiceInput} activeOpacity={0.8}>
+                  {(inputText.trim() || selectedImage) ? (
+                    <LinearGradient colors={topicTheme.gradient} style={[styles.sendBtn, styles.glowSend, { shadowColor: topicTheme.glow }]}>
                       <Send size={20} color="#FFFFFF" />
                     </LinearGradient>
                   ) : (
@@ -444,13 +913,13 @@ const ChatDetailScreen = ({ route, navigation }) => {
               <View style={[styles.inputGlassInner, { borderColor: theme.glassBorder }]}>
                 <View style={styles.inputWrapper}>
                   <TouchableOpacity style={[styles.inputIconBtn, styles.inputIconGlass, { backgroundColor: theme.glass, borderColor: theme.glassBorder }]} onPress={() => setShowToolsModal(true)}>
-                    <Zap size={20} color={theme.primary} />
+                    <Zap size={20} color={topicTheme.accent} />
                   </TouchableOpacity>
 
                   <View style={[styles.inputContainer, { backgroundColor: theme.glass, borderColor: theme.glassBorder }]}>
                     <TextInput
                       style={[styles.input, { color: theme.text }]}
-                      placeholder={isRecording ? "Listening..." : "Ask me anything..."}
+                      placeholder={isRecording ? "Listening..." : selectedImage ? "Ask about the image..." : topicContent.placeholder}
                       placeholderTextColor={theme.placeholder}
                       value={inputText}
                       onChangeText={setInputText}
@@ -458,13 +927,13 @@ const ChatDetailScreen = ({ route, navigation }) => {
                       editable={!isRecording}
                     />
                     <TouchableOpacity style={styles.inputAttachBtn} onPress={() => setShowAttachModal(true)}>
-                      <Paperclip size={18} color={theme.textSecondary} />
+                      <Paperclip size={18} color={selectedImage ? theme.primary : theme.textSecondary} />
                     </TouchableOpacity>
                   </View>
 
-                  <TouchableOpacity onPress={inputText.trim() ? handleSend : handleVoiceInput} activeOpacity={0.8}>
-                    {inputText.trim() ? (
-                      <LinearGradient colors={[theme.gradient1, theme.gradient2]} style={[styles.sendBtn, styles.glowSend]}>
+                  <TouchableOpacity onPress={(inputText.trim() || selectedImage) ? handleSend : handleVoiceInput} activeOpacity={0.8}>
+                    {(inputText.trim() || selectedImage) ? (
+                      <LinearGradient colors={topicTheme.gradient} style={[styles.sendBtn, styles.glowSend, { shadowColor: topicTheme.glow }]}>
                         <Send size={20} color="#FFFFFF" />
                       </LinearGradient>
                     ) : (
@@ -496,7 +965,10 @@ const ChatDetailScreen = ({ route, navigation }) => {
       {/* Options Modal */}
       <Modal visible={showOptionsModal} transparent animationType="fade" onRequestClose={() => setShowOptionsModal(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowOptionsModal(false)}>
-          <View style={[styles.optionsModal, styles.floatingCard, { backgroundColor: theme.surface }]}>
+          <View style={[
+            styles.optionsModal,
+            Platform.OS === 'web' ? styles.optionsModalGlassWeb : { backgroundColor: theme.surface },
+          ]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: theme.text }]}>Options</Text>
               <TouchableOpacity onPress={() => setShowOptionsModal(false)}>
@@ -593,13 +1065,30 @@ const ChatDetailScreen = ({ route, navigation }) => {
         </TouchableOpacity>
       </Modal>
       </SafeAreaView>
+
+      <CustomAlert
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        type={alertConfig.type}
+        buttons={alertConfig.buttons}
+        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  safeArea: { flex: 1 },
+  container: {
+    flex: 1,
+    overflow: 'hidden',
+    maxWidth: '100%',
+  },
+  safeArea: {
+    flex: 1,
+    width: '100%',
+    overflow: 'hidden',
+  },
   // Ambient background for glass effect
   ambientBackground: {
     position: 'absolute',
@@ -636,6 +1125,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     overflow: 'hidden',
   },
+  glassBtnWeb: {
+    backgroundColor: 'rgba(30, 30, 40, 0.4)',
+    backdropFilter: 'blur(20px)',
+    WebkitBackdropFilter: 'blur(20px)',
+    borderWidth: 1,
+    shadowColor: '#A78BFA',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+  },
   glassBtnInner: {
     width: '100%',
     height: '100%',
@@ -662,8 +1161,8 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: scale(20),
+    paddingVertical: scale(16),
   },
   headerBtnWrap: {
     // wrapper for glass button
@@ -672,82 +1171,96 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    marginLeft: 12,
+    marginLeft: scale(12),
   },
   avatarBox: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    marginRight: 12,
+    width: scale(44),
+    height: scale(44),
+    borderRadius: scale(14),
+    marginRight: scale(12),
     alignItems: 'center',
     justifyContent: 'center',
   },
   headerTitle: {
-    fontSize: 17,
+    fontSize: moderateScale(17),
     fontWeight: '700',
-    marginBottom: 2,
+    marginBottom: scale(2),
   },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
   },
   statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
+    width: scale(8),
+    height: scale(8),
+    borderRadius: scale(4),
+    marginRight: scale(6),
   },
   statusText: {
-    fontSize: 13,
+    fontSize: moderateScale(13),
     fontWeight: '500',
   },
   modelBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-    marginLeft: 8,
-    gap: 4,
+    paddingHorizontal: scale(8),
+    paddingVertical: scale(3),
+    borderRadius: scale(10),
+    marginLeft: scale(8),
+    gap: scale(4),
   },
   modelBadgeText: {
-    fontSize: 11,
+    fontSize: moderateScale(11),
     fontWeight: '700',
   },
-  keyboardView: { flex: 1 },
+  keyboardView: {
+    flex: 1,
+    maxWidth: '100%',
+    overflow: 'hidden',
+  },
   messageList: {
-    paddingVertical: 16,
+    paddingVertical: 20,
+    paddingHorizontal: 0,
     flexGrow: 1,
+    maxWidth: '100%',
+    overflow: 'hidden',
+  },
+  flatListStyle: {
+    flex: 1,
+    width: '100%',
+    ...(Platform.OS === 'web' ? {
+      overflowX: 'hidden',
+    } : {}),
   },
   emptyList: { justifyContent: 'center' },
   emptyContainer: {
     alignItems: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: scale(32),
   },
   emptyIconWrap: {
-    marginBottom: 24,
+    marginBottom: scale(24),
   },
   emptyIconGradient: {
-    width: 96,
-    height: 96,
-    borderRadius: 28,
+    width: scale(96),
+    height: scale(96),
+    borderRadius: scale(28),
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#7C3AED',
-    shadowOffset: { width: 0, height: 12 },
+    shadowOffset: { width: 0, height: scale(12) },
     shadowOpacity: 0.4,
-    shadowRadius: 20,
+    shadowRadius: scale(20),
     elevation: 12,
   },
   emptyTitle: {
-    fontSize: 26,
+    fontSize: moderateScale(26),
     fontWeight: '700',
-    marginBottom: 8,
+    marginBottom: scale(8),
   },
   emptySubtitle: {
-    fontSize: 15,
+    fontSize: moderateScale(15),
     textAlign: 'center',
-    marginBottom: 32,
+    marginBottom: scale(32),
   },
   quickPrompts: {
     flexDirection: 'row',
@@ -802,8 +1315,8 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   suggestBarContent: {
-    paddingHorizontal: 16,
-    gap: 10,
+    paddingHorizontal: 20,
+    gap: 12,
   },
   suggestBarItem: {
     paddingHorizontal: 16,
@@ -831,6 +1344,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  scrollBottomBtn: {
+    alignSelf: 'center',
+    marginBottom: 8,
+    zIndex: 10,
+  },
+  scrollBottomGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 24,
+    gap: 6,
+    shadowColor: '#A78BFA',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  scrollBottomText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   inputSection: {
     paddingBottom: 8,
   },
@@ -849,9 +1386,9 @@ const styles = StyleSheet.create({
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    gap: 10,
+    paddingHorizontal: scale(20),
+    paddingVertical: scale(14),
+    gap: scale(12),
   },
   inputIconGlass: {
     borderWidth: 1,
@@ -922,6 +1459,17 @@ const styles = StyleSheet.create({
     padding: 20,
     marginBottom: 32,
   },
+  optionsModalGlassWeb: {
+    backgroundColor: 'rgba(30, 30, 40, 0.6)',
+    backdropFilter: 'blur(20px)',
+    WebkitBackdropFilter: 'blur(20px)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    shadowColor: '#A78BFA',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -986,6 +1534,31 @@ const styles = StyleSheet.create({
     padding: 24,
     paddingBottom: 40,
     borderTopWidth: 1,
+  },
+  // Image preview styles
+  imagePreviewBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginHorizontal: 20,
+    marginBottom: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 12,
+  },
+  imagePreviewThumb: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
+  },
+  imagePreviewText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  imagePreviewClose: {
+    padding: 8,
   },
 });
 

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover" />
+    <title>AI Chat App</title>
+    <style>
+      /* Reset and base styles */
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html, body, #root {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background-color: #0A0A0F;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        overflow: hidden;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+      }
+
+      #root {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+
+      /* Tablet and Desktop - Center content with max width */
+      @media (min-width: 768px) {
+        body {
+          background: linear-gradient(135deg, #1a1a2e 0%, #0A0A0F 100%);
+        }
+
+        #root {
+          width: 100%;
+          height: 100%;
+        }
+      }
+
+      /* Scrollbar styling */
+      ::-webkit-scrollbar {
+        width: 6px;
+      }
+
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      ::-webkit-scrollbar-thumb {
+        background: rgba(167, 139, 250, 0.3);
+        border-radius: 3px;
+      }
+
+      ::-webkit-scrollbar-thumb:hover {
+        background: rgba(167, 139, 250, 0.5);
+      }
+
+      /* Responsive typography */
+      @media (max-width: 374px) {
+        html { font-size: 14px; }
+      }
+
+      @media (min-width: 375px) and (max-width: 413px) {
+        html { font-size: 15px; }
+      }
+
+      @media (min-width: 414px) and (max-width: 767px) {
+        html { font-size: 16px; }
+      }
+
+      @media (min-width: 768px) and (max-width: 1023px) {
+        html { font-size: 17px; }
+      }
+
+      @media (min-width: 1024px) {
+        html { font-size: 18px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

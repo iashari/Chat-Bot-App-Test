@@ -23,7 +23,11 @@
       "edgeToEdgeEnabled": true
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "name": "AI Chat App",
+      "shortName": "AI Chat",
+      "backgroundColor": "#0A0A0F",
+      "themeColor": "#A78BFA"
     }
   }
 }

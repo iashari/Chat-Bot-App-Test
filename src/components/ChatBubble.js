@@ -1,12 +1,35 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, Platform, Animated, Vibration } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Platform, Animated, Vibration, Dimensions, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
-import { MessageSquare, Copy, ThumbsUp, ThumbsDown, RefreshCw, Heart, Flame, Laugh, Bookmark, Share2, Check, CheckCheck } from 'lucide-react-native';
+import { MessageSquare, Copy, ThumbsUp, ThumbsDown, RefreshCw, Heart, Flame, Laugh, Bookmark, Share2, Check, CheckCheck, ImageIcon } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
+import useResponsive from '../hooks/useResponsive';
 
-const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
+const ChatBubble = ({ message, isUser, time, isLast, status = 'read', hasImage, imageUri, isStreaming, isError, topicTheme, topicIcon }) => {
   const { theme } = useTheme();
+  const { width, scale, moderateScale, isTablet, isDesktop, isVerySmall, isSmall } = useResponsive();
+
+  // Responsive sizes for very small devices
+  const rs = {
+    bubblePaddingH: isVerySmall ? 12 : isSmall ? 14 : 18,
+    bubblePaddingV: isVerySmall ? 10 : isSmall ? 12 : 14,
+    bubbleRadius: isVerySmall ? 16 : isSmall ? 18 : 22,
+    bubbleRadiusSmall: isVerySmall ? 4 : 6,
+    fontSize: isVerySmall ? 13 : isSmall ? 14 : 15,
+    lineHeight: isVerySmall ? 19 : isSmall ? 20 : 22,
+    timestampSize: isVerySmall ? 9 : isSmall ? 10 : 11,
+    avatarSize: isVerySmall ? 28 : isSmall ? 32 : 36,
+    avatarRadius: isVerySmall ? 9 : isSmall ? 10 : 12,
+    avatarIconSize: isVerySmall ? 12 : isSmall ? 14 : 16,
+    marginH: isVerySmall ? 16 : isSmall ? 20 : 24,
+    marginV: isVerySmall ? 6 : isSmall ? 7 : 8,
+    actionPadH: isVerySmall ? 8 : isSmall ? 10 : 12,
+    actionPadV: isVerySmall ? 6 : isSmall ? 7 : 8,
+    actionRadius: isVerySmall ? 8 : isSmall ? 9 : 10,
+    actionIconSize: isVerySmall ? 12 : isSmall ? 13 : 14,
+    gap: isVerySmall ? 4 : isSmall ? 5 : 6,
+  };
   const [liked, setLiked] = useState(null);
   const [copied, setCopied] = useState(false);
   const [reactions, setReactions] = useState([]);
@@ -94,6 +117,19 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
     { icon: ThumbsUp, color: theme.primary, name: 'thumbsup' },
   ];
 
+  // Calculate responsive bubble max width
+  const getBubbleMaxWidth = () => {
+    if (Platform.OS === 'web') {
+      if (isDesktop) return Math.min(width * 0.5, 500);
+      if (isTablet) return Math.min(width * 0.6, 450);
+      if (isVerySmall) return width * 0.85;
+      return width * 0.78;
+    }
+    if (isVerySmall) return width * 0.88;
+    if (isSmall) return width * 0.85;
+    return width * 0.8;
+  };
+
   // Animated button press
   const ActionButton = ({ children, onPress, isActive, activeColor }) => {
     const btnScaleAnim = useRef(new Animated.Value(1)).current;
@@ -122,7 +158,13 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
           style={[
             styles.actionButton,
             styles.actionButtonGlass,
-            { backgroundColor: theme.glass || theme.surface, borderColor: theme.glassBorder },
+            {
+              backgroundColor: theme.glass || theme.surface,
+              borderColor: theme.glassBorder,
+              paddingHorizontal: rs.actionPadH,
+              paddingVertical: rs.actionPadV,
+              borderRadius: rs.actionRadius,
+            },
             isActive && { backgroundColor: activeColor || theme.primaryGlass || theme.primarySoft }
           ]}
           onPress={onPress}
@@ -136,6 +178,8 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
     );
   };
 
+  const SIDE_PADDING = isVerySmall ? 16 : isSmall ? 20 : 24;
+
   if (isUser) {
     return (
       <Animated.View
@@ -143,6 +187,9 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
           styles.container,
           styles.userContainer,
           {
+            marginVertical: rs.marginV,
+            paddingLeft: SIDE_PADDING,
+            paddingRight: SIDE_PADDING,
             opacity: fadeAnim,
             transform: [
               { translateX: slideAnim },
@@ -152,21 +199,53 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
         ]}
       >
         <LinearGradient
-          colors={[theme.gradient1, theme.gradient2]}
+          colors={topicTheme?.gradient || [theme.gradient1, theme.gradient2]}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
-          style={[styles.bubble, styles.userBubble, styles.userBubbleShadow]}
+          style={[
+            styles.bubble,
+            styles.userBubble,
+            styles.userBubbleShadow,
+            {
+              maxWidth: getBubbleMaxWidth(),
+              paddingHorizontal: rs.bubblePaddingH,
+              paddingVertical: rs.bubblePaddingV,
+              borderRadius: rs.bubbleRadius,
+              borderBottomRightRadius: rs.bubbleRadiusSmall,
+              shadowColor: topicTheme?.glow || '#A78BFA',
+            }
+          ]}
         >
-          <Text style={[styles.messageText, { color: '#FFFFFF' }]}>
+          {/* Display image if present */}
+          {hasImage && imageUri && (
+            <View style={styles.imageContainer}>
+              <Image
+                source={{ uri: imageUri }}
+                style={[styles.messageImage, { borderRadius: rs.avatarRadius }]}
+                resizeMode="cover"
+              />
+              <View style={styles.imageOverlay}>
+                <ImageIcon size={rs.avatarIconSize} color="#FFFFFF" />
+              </View>
+            </View>
+          )}
+          <Text style={[
+            styles.messageText,
+            {
+              color: '#FFFFFF',
+              fontSize: rs.fontSize,
+              lineHeight: rs.lineHeight,
+            }
+          ]}>
             {message}
           </Text>
-          <View style={styles.userTimestampRow}>
-            <Text style={[styles.timestamp, { color: 'rgba(255,255,255,0.7)' }]}>
+          <View style={[styles.userTimestampRow, { marginTop: rs.gap, gap: rs.gap - 2 }]}>
+            <Text style={[styles.timestamp, { color: 'rgba(255,255,255,0.7)', fontSize: rs.timestampSize }]}>
               {time}
             </Text>
-            {status === 'sent' && <Check size={14} color="rgba(255,255,255,0.7)" />}
-            {status === 'delivered' && <CheckCheck size={14} color="rgba(255,255,255,0.7)" />}
-            {status === 'read' && <CheckCheck size={14} color="#4ADE80" />}
+            {status === 'sent' && <Check size={rs.actionIconSize} color="rgba(255,255,255,0.7)" />}
+            {status === 'delivered' && <CheckCheck size={rs.actionIconSize} color="rgba(255,255,255,0.7)" />}
+            {status === 'read' && <CheckCheck size={rs.actionIconSize} color="#4ADE80" />}
           </View>
         </LinearGradient>
       </Animated.View>
@@ -178,6 +257,9 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
       style={[
         styles.aiMessageWrapper,
         {
+          marginBottom: rs.marginV + 2,
+          paddingLeft: SIDE_PADDING,
+          paddingRight: SIDE_PADDING,
           opacity: fadeAnim,
           transform: [
             { translateX: slideAnim },
@@ -187,16 +269,11 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
       ]}
     >
       <View style={[styles.container, styles.aiContainer]}>
-        <LinearGradient
-          colors={[theme.gradient1, theme.gradient2]}
-          style={[styles.avatarContainer, styles.avatarGlow]}
-        >
-          <MessageSquare size={16} color="#FFFFFF" />
-        </LinearGradient>
         <TouchableOpacity
           onLongPress={toggleReactions}
           activeOpacity={0.9}
           delayLongPress={300}
+          style={{ maxWidth: getBubbleMaxWidth() }}
         >
           {Platform.OS === 'web' ? (
             <View
@@ -207,29 +284,96 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
                 {
                   backgroundColor: theme.glass || theme.aiBubble,
                   borderColor: theme.glassBorder || theme.aiBubbleBorder,
+                  paddingHorizontal: rs.bubblePaddingH,
+                  paddingVertical: rs.bubblePaddingV,
+                  borderRadius: rs.bubbleRadius,
+                  borderBottomLeftRadius: rs.bubbleRadiusSmall,
                 },
               ]}
             >
-              <Text style={[styles.messageText, { color: theme.aiBubbleText }]}>
+              <Text style={[
+                styles.messageText,
+                {
+                  color: isError ? '#EF4444' : theme.aiBubbleText,
+                  fontSize: rs.fontSize,
+                  lineHeight: rs.lineHeight,
+                }
+              ]}>
                 {message}
+                {isStreaming && <Text style={{ color: topicTheme?.accent || theme.primary }}>▊</Text>}
               </Text>
-              <Text style={[styles.timestamp, { color: theme.textMuted }]}>
-                {time}
-              </Text>
+              <View style={[styles.userTimestampRow, { marginTop: rs.gap, gap: rs.gap }]}>
+                {isStreaming && (
+                  <View style={styles.streamingIndicator}>
+                    <Animated.View style={[styles.streamingDot, { opacity: 0.4 }]} />
+                    <Animated.View style={[styles.streamingDot, { opacity: 0.7 }]} />
+                    <Animated.View style={[styles.streamingDot, { opacity: 1 }]} />
+                  </View>
+                )}
+                <Text style={[
+                  styles.timestamp,
+                  {
+                    color: theme.textMuted,
+                    fontSize: rs.timestampSize,
+                  }
+                ]}>
+                  {isStreaming ? 'typing...' : time}
+                </Text>
+              </View>
             </View>
           ) : (
             <BlurView
               intensity={15}
               tint={theme.background === '#0A0A0F' ? 'dark' : 'light'}
-              style={[styles.bubble, styles.aiBubble, styles.aiBubbleBlur]}
+              style={[
+                styles.bubble,
+                styles.aiBubble,
+                styles.aiBubbleBlur,
+                {
+                  borderRadius: rs.bubbleRadius,
+                  borderBottomLeftRadius: rs.bubbleRadiusSmall,
+                }
+              ]}
             >
-              <View style={[styles.aiBubbleInner, { borderColor: theme.glassBorder || theme.aiBubbleBorder }]}>
-                <Text style={[styles.messageText, { color: theme.aiBubbleText }]}>
+              <View style={[
+                styles.aiBubbleInner,
+                {
+                  borderColor: theme.glassBorder || theme.aiBubbleBorder,
+                  paddingHorizontal: rs.bubblePaddingH,
+                  paddingVertical: rs.bubblePaddingV,
+                  borderRadius: rs.bubbleRadius,
+                  borderBottomLeftRadius: rs.bubbleRadiusSmall,
+                }
+              ]}>
+                <Text style={[
+                  styles.messageText,
+                  {
+                    color: isError ? '#EF4444' : theme.aiBubbleText,
+                    fontSize: rs.fontSize,
+                    lineHeight: rs.lineHeight,
+                  }
+                ]}>
                   {message}
+                  {isStreaming && <Text style={{ color: topicTheme?.accent || theme.primary }}>▊</Text>}
                 </Text>
-                <Text style={[styles.timestamp, { color: theme.textMuted }]}>
-                  {time}
-                </Text>
+                <View style={[styles.userTimestampRow, { marginTop: rs.gap, gap: rs.gap }]}>
+                  {isStreaming && (
+                    <View style={styles.streamingIndicator}>
+                      <View style={[styles.streamingDot, { opacity: 0.4 }]} />
+                      <View style={[styles.streamingDot, { opacity: 0.7 }]} />
+                      <View style={[styles.streamingDot, { opacity: 1 }]} />
+                    </View>
+                  )}
+                  <Text style={[
+                    styles.timestamp,
+                    {
+                      color: theme.textMuted,
+                      fontSize: rs.timestampSize,
+                    }
+                  ]}>
+                    {isStreaming ? 'typing...' : time}
+                  </Text>
+                </View>
               </View>
             </BlurView>
           )}
@@ -281,20 +425,28 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
       </View>
 
       {/* Action Buttons */}
-      <View style={styles.actionsContainer}>
+      <View style={[
+        styles.actionsContainer,
+        {
+          marginLeft: 0,
+          marginTop: rs.gap,
+          gap: rs.gap,
+          maxWidth: getBubbleMaxWidth(),
+        }
+      ]}>
         <ActionButton
           onPress={handleCopy}
           isActive={copied}
         >
-          <Copy size={14} color={copied ? theme.primary : theme.textMuted} />
-          {copied && <Text style={[styles.actionText, { color: theme.primary }]}>Copied!</Text>}
+          <Copy size={rs.actionIconSize} color={copied ? theme.primary : theme.textMuted} />
+          {copied && <Text style={[styles.actionText, { color: theme.primary, fontSize: rs.timestampSize }]}>Copied!</Text>}
         </ActionButton>
 
         <ActionButton
           onPress={() => handleLike('up')}
           isActive={liked === 'up'}
         >
-          <ThumbsUp size={14} color={liked === 'up' ? theme.primary : theme.textMuted} />
+          <ThumbsUp size={rs.actionIconSize} color={liked === 'up' ? theme.primary : theme.textMuted} />
         </ActionButton>
 
         <ActionButton
@@ -302,20 +454,20 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
           isActive={liked === 'down'}
           activeColor="rgba(239, 68, 68, 0.1)"
         >
-          <ThumbsDown size={14} color={liked === 'down' ? '#EF4444' : theme.textMuted} />
+          <ThumbsDown size={rs.actionIconSize} color={liked === 'down' ? '#EF4444' : theme.textMuted} />
         </ActionButton>
 
         <ActionButton
           onPress={handleSave}
           isActive={isSaved}
         >
-          <Bookmark size={14} color={isSaved ? theme.primary : theme.textMuted} fill={isSaved ? theme.primary : 'transparent'} />
+          <Bookmark size={rs.actionIconSize} color={isSaved ? theme.primary : theme.textMuted} fill={isSaved ? theme.primary : 'transparent'} />
         </ActionButton>
 
         <ActionButton
           onPress={() => Alert.alert('Regenerate', 'This would regenerate the response')}
         >
-          <RefreshCw size={14} color={theme.textMuted} />
+          <RefreshCw size={rs.actionIconSize} color={theme.textMuted} />
         </ActionButton>
       </View>
     </Animated.View>
@@ -324,11 +476,9 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read' }) => {
 
 const styles = StyleSheet.create({
   aiMessageWrapper: {
-    marginBottom: 8,
+    // Dynamic values applied inline
   },
   container: {
-    marginVertical: 6,
-    marginHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'flex-end',
   },
@@ -337,14 +487,11 @@ const styles = StyleSheet.create({
   },
   aiContainer: {
     justifyContent: 'flex-start',
+    marginHorizontal: 0,
   },
   avatarContainer: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 10,
   },
   avatarGlow: {
     shadowColor: '#A78BFA',
@@ -354,13 +501,11 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   bubble: {
-    maxWidth: '75%',
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-    borderRadius: 22,
+    minWidth: 60,
+    flexShrink: 1,
   },
   userBubble: {
-    borderBottomRightRadius: 6,
+    // borderBottomRightRadius applied inline
   },
   userBubbleShadow: {
     shadowColor: '#A78BFA',
@@ -370,32 +515,31 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   aiBubble: {
-    borderBottomLeftRadius: 6,
     overflow: 'hidden',
   },
   aiBubbleGlass: {
     borderWidth: 1,
-    backdropFilter: 'blur(15px)',
+    ...(Platform.OS === 'web' ? {
+      backdropFilter: 'blur(15px)',
+    } : {}),
   },
   aiBubbleBlur: {
-    borderRadius: 22,
-    borderBottomLeftRadius: 6,
+    // borderRadius applied inline
   },
   aiBubbleInner: {
-    paddingHorizontal: 18,
-    paddingVertical: 14,
     borderWidth: 1,
-    borderRadius: 22,
-    borderBottomLeftRadius: 6,
   },
   messageText: {
-    fontSize: 15,
-    lineHeight: 22,
     letterSpacing: 0.2,
+    flexWrap: 'wrap',
+    flexShrink: 1,
+    ...(Platform.OS === 'web' ? {
+      wordBreak: 'break-word',
+      overflowWrap: 'break-word',
+      whiteSpace: 'pre-wrap',
+    } : {}),
   },
   timestamp: {
-    fontSize: 11,
-    marginTop: 8,
     alignSelf: 'flex-end',
     fontWeight: '500',
   },
@@ -403,28 +547,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-end',
-    marginTop: 8,
-    gap: 4,
   },
   actionsContainer: {
     flexDirection: 'row',
-    marginLeft: 62,
-    marginTop: 6,
-    gap: 6,
+    flexWrap: 'wrap',
   },
   actionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
     gap: 4,
   },
   actionButtonGlass: {
     borderWidth: 1,
   },
   actionText: {
-    fontSize: 11,
     fontWeight: '600',
   },
   reactionsDisplay: {
@@ -466,6 +602,35 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  imageContainer: {
+    marginBottom: 10,
+    position: 'relative',
+  },
+  messageImage: {
+    width: 200,
+    height: 150,
+  },
+  imageOverlay: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 12,
+    padding: 6,
+  },
+  streamingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  streamingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#A78BFA',
+  },
 });
+
+// Note: streamingDot color is static in StyleSheet but topic accent is applied via inline style in ChatDetailScreen
 
 export default ChatBubble;
