@@ -3,7 +3,12 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { GoogleGenAI } = require('@google/genai');
 const Groq = require('groq-sdk');
+const schedule = require('node-schedule');
+const { Expo } = require('expo-server-sdk');
 require('dotenv').config();
+
+// Initialize Expo push notification client
+const expo = new Expo();
 
 const {
   initDatabase,
@@ -29,8 +34,20 @@ const {
   // Messages
   getChatMessages,
   addMessage,
+  clearChatMessages,
   // Stats
   getUserStats,
+  // Digest
+  getDigestSettings,
+  createDigestSettings,
+  updateDigestSettings,
+  createDigest,
+  getDigestById: getDigestByIdDb,
+  getUserDigests,
+  markDigestRead,
+  getUnreadDigestCount,
+  deleteDigest: deleteDigestDb,
+  getEnabledDigestUsers,
 } = require('./database');
 
 const app = express();
@@ -54,30 +71,51 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Convert Gemini-style contents to Groq/OpenAI-style messages
+ * Supports image data via vision-compatible format
  */
 const contentsToMessages = (contents, systemPrompt) => {
   const messages = [];
+  let hasImages = false;
   if (systemPrompt && systemPrompt.trim()) {
     messages.push({ role: 'system', content: systemPrompt });
   }
   for (const item of contents) {
     const role = item.role === 'model' ? 'assistant' : 'user';
-    const text = item.parts?.map(p => p.text).filter(Boolean).join('\n') || '';
-    if (text) {
-      messages.push({ role, content: text });
+    const contentParts = [];
+    for (const part of (item.parts || [])) {
+      if (part.text) {
+        contentParts.push({ type: 'text', text: part.text });
+      } else if (part.inlineData) {
+        hasImages = true;
+        contentParts.push({
+          type: 'image_url',
+          image_url: { url: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` }
+        });
+      }
+    }
+    if (contentParts.length > 0) {
+      // Use simple string for text-only, array for multimodal
+      if (contentParts.length === 1 && contentParts[0].type === 'text') {
+        messages.push({ role, content: contentParts[0].text });
+      } else {
+        messages.push({ role, content: contentParts });
+      }
     }
   }
-  return messages;
+  return { messages, hasImages };
 };
 
 /**
  * Call Groq API (fallback provider)
+ * Uses vision model automatically when images are present
  */
 const callGroq = async (contents, systemPrompt = '') => {
   if (!groq) throw new Error('Groq API key not configured');
-  const messages = contentsToMessages(contents, systemPrompt);
+  const { messages, hasImages } = contentsToMessages(contents, systemPrompt);
+  const model = hasImages ? 'meta-llama/llama-4-scout-17b-16e-instruct' : 'llama-3.3-70b-versatile';
+  console.log(`Groq model: ${model} (hasImages: ${hasImages})`);
   const response = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+    model,
     messages,
     max_tokens: 4096,
   });
@@ -86,12 +124,15 @@ const callGroq = async (contents, systemPrompt = '') => {
 
 /**
  * Call Groq streaming API (fallback provider)
+ * Uses vision model automatically when images are present
  */
 const callGroqStream = async (contents, systemPrompt = '') => {
   if (!groq) throw new Error('Groq API key not configured');
-  const messages = contentsToMessages(contents, systemPrompt);
+  const { messages, hasImages } = contentsToMessages(contents, systemPrompt);
+  const model = hasImages ? 'meta-llama/llama-4-scout-17b-16e-instruct' : 'llama-3.3-70b-versatile';
+  console.log(`Groq stream model: ${model} (hasImages: ${hasImages})`);
   const stream = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+    model,
     messages,
     max_tokens: 4096,
     stream: true,
@@ -464,6 +505,19 @@ app.delete('/api/chats/:id', authenticateToken, (req, res) => {
   }
 });
 
+// Clear all messages in a chat
+app.delete('/api/chats/:id/messages', authenticateToken, (req, res) => {
+  try {
+    const cleared = clearChatMessages(req.params.id, req.user.id);
+    if (!cleared) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+    res.json({ success: true, message: 'Messages cleared' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to clear messages' });
+  }
+});
+
 // ==================== AI CHAT ENDPOINT ====================
 
 app.post('/api/chat', optionalAuth, async (req, res) => {
@@ -487,11 +541,14 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     // Build contents for Gemini-style format
     const contents = [];
 
-    // Add system prompt
-    if (systemPrompt && systemPrompt.trim()) {
-      contents.push({ role: 'user', parts: [{ text: systemPrompt }] });
-      contents.push({ role: 'model', parts: [{ text: 'Understood. I will follow these instructions.' }] });
-    }
+    // Add system prompt with memory instruction
+    const memoryInstruction = 'You must always remember and reference the full conversation history. When a user refers to something discussed earlier (like an image, topic, or question), use your previous responses as context. If the user previously sent an image and you described it, remember that description in follow-up messages.';
+    const fullSystemPrompt = systemPrompt && systemPrompt.trim()
+      ? `${systemPrompt}\n\n${memoryInstruction}`
+      : memoryInstruction;
+
+    contents.push({ role: 'user', parts: [{ text: fullSystemPrompt }] });
+    contents.push({ role: 'model', parts: [{ text: 'Understood. I will follow these instructions and remember our full conversation context.' }] });
 
     // Add history
     if (history && Array.isArray(history)) {
@@ -528,7 +585,7 @@ app.post('/api/chat', optionalAuth, async (req, res) => {
     // Save to database if user is authenticated and chatId provided
     if (req.user && chatId) {
       const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      addMessage(chatId, req.user.id, message, true, time);
+      addMessage(chatId, req.user.id, message, true, time, image || null);
       addMessage(chatId, req.user.id, responseText, false, time);
     }
 
@@ -580,10 +637,13 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     // Build contents
     const contents = [];
 
-    if (systemPrompt && systemPrompt.trim()) {
-      contents.push({ role: 'user', parts: [{ text: systemPrompt }] });
-      contents.push({ role: 'model', parts: [{ text: 'Understood. I will follow these instructions.' }] });
-    }
+    const streamMemoryInstruction = 'You must always remember and reference the full conversation history. When a user refers to something discussed earlier (like an image, topic, or question), use your previous responses as context. If the user previously sent an image and you described it, remember that description in follow-up messages.';
+    const streamFullPrompt = systemPrompt && systemPrompt.trim()
+      ? `${systemPrompt}\n\n${streamMemoryInstruction}`
+      : streamMemoryInstruction;
+
+    contents.push({ role: 'user', parts: [{ text: streamFullPrompt }] });
+    contents.push({ role: 'model', parts: [{ text: 'Understood. I will follow these instructions and remember our full conversation context.' }] });
 
     if (history && Array.isArray(history)) {
       for (const msg of history) {
@@ -639,7 +699,7 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
     // Save to database
     if (req.user && chatId && fullResponse) {
       const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      addMessage(chatId, req.user.id, message, true, time);
+      addMessage(chatId, req.user.id, message, true, time, image || null);
       addMessage(chatId, req.user.id, fullResponse, false, time);
     }
 
@@ -658,12 +718,273 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
   }
 });
 
+// ==================== DIGEST GENERATION (GEMINI + GOOGLE GROUNDING) ====================
+
+const generateDigest = async (topics = ['Technology', 'Science'], customPrompt = '') => {
+  if (!ai) throw new Error('Gemini API key not configured for digest generation');
+
+  const topicList = topics.join(', ');
+  const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+  const prompt = customPrompt
+    ? `${customPrompt}\n\nTopics: ${topicList}\nDate: ${today}\n\nProvide a comprehensive news digest with the latest headlines and summaries. Format with clear headings, bullet points, and key takeaways. Include source references.`
+    : `Create a Daily AI News Digest for ${today}.\n\nTopics: ${topicList}\n\nProvide:\n1. A catchy title for today's digest\n2. 4-6 latest news stories with summaries for each topic\n3. Key takeaways and trends\n4. Format with markdown headings (##), bullet points, and bold text\n5. Keep each story summary to 2-3 sentences\n\nMake it informative, engaging, and well-structured.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        tools: [{ googleSearch: {} }],
+      },
+    });
+
+    const text = response.text || 'Could not generate digest content.';
+
+    // Extract grounding sources
+    let sources = [];
+    try {
+      const candidate = response.candidates?.[0];
+      const groundingMeta = candidate?.groundingMetadata;
+      const chunks = groundingMeta?.groundingChunks || [];
+      sources = chunks
+        .filter(chunk => chunk.web)
+        .map(chunk => ({
+          title: chunk.web.title || 'Source',
+          url: chunk.web.uri || '',
+        }))
+        .filter(s => s.url);
+    } catch (e) {
+      console.log('No grounding sources found:', e.message);
+    }
+
+    // Extract title from content (first # heading or first line)
+    let title = `Daily Digest - ${today}`;
+    const titleMatch = text.match(/^#\s+(.+)$/m);
+    if (titleMatch) {
+      title = titleMatch[1].trim();
+    }
+
+    return { title, content: text, sources, topics };
+  } catch (error) {
+    console.error('Digest generation error:', error);
+    throw error;
+  }
+};
+
+// ==================== DIGEST ENDPOINTS ====================
+
+// Get digest settings
+app.get('/api/digest/settings', authenticateToken, (req, res) => {
+  try {
+    const settings = getDigestSettings(req.user.id);
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Get Digest Settings Error:', error);
+    res.status(500).json({ error: 'Failed to get digest settings' });
+  }
+});
+
+// Update digest settings
+app.put('/api/digest/settings', authenticateToken, (req, res) => {
+  try {
+    const settings = updateDigestSettings(req.user.id, req.body);
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Update Digest Settings Error:', error);
+    res.status(500).json({ error: 'Failed to update digest settings' });
+  }
+});
+
+// Get digest history
+app.get('/api/digests', authenticateToken, (req, res) => {
+  try {
+    const digests = getUserDigests(req.user.id);
+    res.json({ success: true, digests });
+  } catch (error) {
+    console.error('Get Digests Error:', error);
+    res.status(500).json({ error: 'Failed to get digests' });
+  }
+});
+
+// Get unread digest count
+app.get('/api/digests/unread/count', authenticateToken, (req, res) => {
+  try {
+    const count = getUnreadDigestCount(req.user.id);
+    res.json({ success: true, count });
+  } catch (error) {
+    console.error('Get Unread Count Error:', error);
+    res.status(500).json({ error: 'Failed to get unread count' });
+  }
+});
+
+// Get single digest (marks as read)
+app.get('/api/digests/:id', authenticateToken, (req, res) => {
+  try {
+    const digest = markDigestRead(req.params.id, req.user.id);
+    if (!digest) {
+      return res.status(404).json({ error: 'Digest not found' });
+    }
+    res.json({ success: true, digest });
+  } catch (error) {
+    console.error('Get Digest Error:', error);
+    res.status(500).json({ error: 'Failed to get digest' });
+  }
+});
+
+// Delete a digest
+app.delete('/api/digests/:id', authenticateToken, (req, res) => {
+  try {
+    const deleted = deleteDigestDb(req.params.id, req.user.id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Digest not found' });
+    }
+    res.json({ success: true, message: 'Digest deleted' });
+  } catch (error) {
+    console.error('Delete Digest Error:', error);
+    res.status(500).json({ error: 'Failed to delete digest' });
+  }
+});
+
+// Generate test digest
+app.post('/api/digest/test', authenticateToken, async (req, res) => {
+  try {
+    console.log('\n=== GENERATING TEST DIGEST ===');
+    console.log('User:', req.user.email);
+
+    const settings = getDigestSettings(req.user.id);
+    const topics = JSON.parse(settings.topics || '["Technology","Science"]');
+    const customPrompt = settings.custom_prompt || '';
+
+    const result = await generateDigest(topics, customPrompt);
+    const digest = createDigest(req.user.id, result.title, result.content, result.topics, result.sources);
+
+    console.log('Test digest created:', digest.id);
+    console.log('Sources found:', result.sources.length);
+    console.log('==============================\n');
+
+    res.json({ success: true, digest });
+  } catch (error) {
+    console.error('Test Digest Error:', error);
+    res.status(500).json({ error: 'Failed to generate test digest: ' + error.message });
+  }
+});
+
+// Store push token
+app.post('/api/push-token', authenticateToken, (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: 'Push token is required' });
+    }
+    updateDigestSettings(req.user.id, { push_token: token });
+    res.json({ success: true, message: 'Push token saved' });
+  } catch (error) {
+    console.error('Push Token Error:', error);
+    res.status(500).json({ error: 'Failed to save push token' });
+  }
+});
+
+// ==================== PUSH NOTIFICATION HELPER ====================
+
+const sendPushNotification = async (pushToken, title, body, data = {}) => {
+  if (!pushToken || !Expo.isExpoPushToken(pushToken)) {
+    console.log('Invalid or missing push token:', pushToken);
+    return;
+  }
+
+  try {
+    const messages = [{
+      to: pushToken,
+      sound: 'default',
+      title,
+      body,
+      data,
+    }];
+
+    const chunks = expo.chunkPushNotifications(messages);
+    for (const chunk of chunks) {
+      const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+      console.log('Push notification sent:', ticketChunk);
+    }
+  } catch (error) {
+    console.error('Push notification error:', error);
+  }
+};
+
+// ==================== DIGEST SCHEDULER ====================
+
+const startDigestScheduler = () => {
+  // Run every hour at minute 0
+  schedule.scheduleJob('0 * * * *', async () => {
+    console.log('\n=== DIGEST SCHEDULER CHECK ===');
+    console.log('Time:', new Date().toISOString());
+
+    try {
+      const enabledUsers = getEnabledDigestUsers();
+      console.log(`Enabled digest users: ${enabledUsers.length}`);
+
+      for (const userSettings of enabledUsers) {
+        try {
+          const digestTime = userSettings.digest_time || '08:00';
+          const timezone = userSettings.timezone || 'Asia/Jakarta';
+
+          // Get current time in user's timezone
+          const now = new Date();
+          const userTime = new Intl.DateTimeFormat('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+            timeZone: timezone,
+          }).format(now);
+
+          // Check if current hour matches digest time
+          const currentHour = userTime.split(':')[0];
+          const digestHour = digestTime.split(':')[0];
+
+          if (currentHour === digestHour) {
+            console.log(`Generating digest for ${userSettings.email} (${timezone})`);
+            const topics = JSON.parse(userSettings.topics || '["Technology","Science"]');
+            const customPrompt = userSettings.custom_prompt || '';
+
+            const result = await generateDigest(topics, customPrompt);
+            const digest = createDigest(userSettings.user_id, result.title, result.content, result.topics, result.sources);
+            console.log(`Digest created for ${userSettings.email}`);
+
+            // Send push notification
+            if (userSettings.push_token) {
+              await sendPushNotification(
+                userSettings.push_token,
+                'Daily AI Digest',
+                result.title,
+                { digestId: digest.id, type: 'digest' }
+              );
+              console.log(`Push notification sent to ${userSettings.email}`);
+            }
+          }
+        } catch (userError) {
+          console.error(`Digest error for user ${userSettings.email}:`, userError.message);
+        }
+      }
+    } catch (error) {
+      console.error('Scheduler error:', error);
+    }
+
+    console.log('==============================\n');
+  });
+
+  console.log('Digest scheduler started (hourly check)');
+};
+
 // ==================== START SERVER ====================
 
 app.listen(PORT, () => {
+  // Start digest scheduler
+  startDigestScheduler();
+
   console.log(`
 ╔════════════════════════════════════════════╗
-║     AI Chat Backend Server v2.0            ║
+║     AI Chat Backend Server v2.1            ║
 ╠════════════════════════════════════════════╣
 ║  Status:    Running                        ║
 ║  URL:       http://localhost:${PORT}           ║
@@ -680,6 +1001,14 @@ app.listen(PORT, () => {
 ║  • GET/POST /api/assistants                ║
 ║  • GET/POST /api/chats                     ║
 ║  • POST /api/chat                          ║
+╠════════════════════════════════════════════╣
+║  Digest Endpoints:                         ║
+║  • GET/PUT  /api/digest/settings           ║
+║  • GET      /api/digests                   ║
+║  • GET      /api/digests/:id               ║
+║  • GET      /api/digests/unread/count      ║
+║  • POST     /api/digest/test               ║
+║  • POST     /api/push-token                ║
 ╚════════════════════════════════════════════╝
   `);
 });

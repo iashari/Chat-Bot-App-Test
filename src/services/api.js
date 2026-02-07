@@ -215,6 +215,23 @@ export const isAuthenticated = () => {
 /**
  * Send a message to the Gemini AI
  */
+export const formatHistory = (history) => {
+  return history
+    .filter(msg => msg.text && msg.text.trim())
+    .map(msg => {
+      const isUser = msg.isUser || msg.is_user;
+      let text = msg.text;
+      // Mark messages that had images so AI remembers the context
+      if (isUser && (msg.hasImage || msg.imageUri)) {
+        text = `[User attached an image] ${text}`;
+      }
+      return {
+        role: isUser ? 'user' : 'model',
+        parts: [{ text }],
+      };
+    });
+};
+
 export const sendMessage = async (message, history = [], systemPrompt = '', chatId = null) => {
   try {
     console.log('Sending to:', API_BASE_URL + '/api/chat');
@@ -225,10 +242,7 @@ export const sendMessage = async (message, history = [], systemPrompt = '', chat
       headers: getHeaders(),
       body: JSON.stringify({
         message,
-        history: history.map(msg => ({
-          role: msg.isUser || msg.is_user ? 'user' : 'model',
-          parts: [{ text: msg.text }],
-        })),
+        history: formatHistory(history),
         systemPrompt,
         chatId,
       }),
@@ -277,10 +291,7 @@ export const sendMessageWithImage = async (message, imageBase64, history = [], s
         image: imageBase64,
         systemPrompt,
         chatId,
-        history: history.map(msg => ({
-          role: msg.isUser || msg.is_user ? 'user' : 'model',
-          parts: [{ text: msg.text }],
-        })),
+        history: formatHistory(history),
       }),
     });
 
@@ -321,10 +332,7 @@ export const sendMessageStream = async (message, history = [], systemPrompt = ''
         image: imageBase64,
         systemPrompt,
         chatId,
-        history: history.map(msg => ({
-          role: msg.isUser || msg.is_user ? 'user' : 'model',
-          parts: [{ text: msg.text }],
-        })),
+        history: formatHistory(history),
       }),
     });
 
@@ -470,6 +478,29 @@ export const deleteChat = async (chatId) => {
 };
 
 /**
+ * Clear all messages in a chat
+ */
+export const clearChatMessages = async (chatId) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/chats/${chatId}/messages`, {
+      method: 'DELETE',
+      headers: getHeaders(),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to clear messages');
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Clear Messages Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+/**
  * Update a chat
  */
 export const updateChat = async (chatId, updates) => {
@@ -512,6 +543,126 @@ export const getAssistants = async () => {
   }
 };
 
+// ==================== DIGEST FUNCTIONS ====================
+
+export const getDigestSettings = async () => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/digest/settings`, {
+      headers: getHeaders(),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to get digest settings');
+    return { success: true, settings: data.settings };
+  } catch (error) {
+    console.error('Get Digest Settings Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const updateDigestSettings = async (settings) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/digest/settings`, {
+      method: 'PUT',
+      headers: getHeaders(),
+      body: JSON.stringify(settings),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to update digest settings');
+    return { success: true, settings: data.settings };
+  } catch (error) {
+    console.error('Update Digest Settings Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const getDigests = async () => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/digests`, {
+      headers: getHeaders(),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to get digests');
+    return { success: true, digests: data.digests || [] };
+  } catch (error) {
+    console.error('Get Digests Error:', error);
+    return { success: false, digests: [], error: error.message };
+  }
+};
+
+export const getDigestById = async (digestId) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/digests/${digestId}`, {
+      headers: getHeaders(),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to get digest');
+    return { success: true, digest: data.digest };
+  } catch (error) {
+    console.error('Get Digest Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const getUnreadDigestCount = async () => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/digests/unread/count`, {
+      headers: getHeaders(),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to get unread count');
+    return { success: true, count: data.count };
+  } catch (error) {
+    console.error('Get Unread Count Error:', error);
+    return { success: false, count: 0, error: error.message };
+  }
+};
+
+export const deleteDigest = async (digestId) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/digests/${digestId}`, {
+      method: 'DELETE',
+      headers: getHeaders(),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to delete digest');
+    return { success: true };
+  } catch (error) {
+    console.error('Delete Digest Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const triggerTestDigest = async () => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/digest/test`, {
+      method: 'POST',
+      headers: getHeaders(),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to generate test digest');
+    return { success: true, digest: data.digest };
+  } catch (error) {
+    console.error('Test Digest Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const savePushToken = async (token) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/push-token`, {
+      method: 'POST',
+      headers: getHeaders(),
+      body: JSON.stringify({ token }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to save push token');
+    return { success: true };
+  } catch (error) {
+    console.error('Save Push Token Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
 export default {
   // Auth
   register,
@@ -536,4 +687,13 @@ export default {
   deleteChat,
   updateChat,
   getAssistants,
+  // Digest
+  getDigestSettings,
+  updateDigestSettings,
+  getDigests,
+  getDigestById: getDigestById,
+  getUnreadDigestCount,
+  deleteDigest,
+  triggerTestDigest,
+  savePushToken,
 };

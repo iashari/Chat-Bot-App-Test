@@ -31,6 +31,7 @@ import {
   Mail,
   Phone,
   Camera,
+  Newspaper,
 } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
@@ -39,7 +40,7 @@ import CustomAlert from '../components/CustomAlert';
 
 const { width: screenWidth } = Dimensions.get('window');
 
-const ProfileScreen = () => {
+const ProfileScreen = ({ navigation }) => {
   const { theme, isDarkMode, toggleTheme } = useTheme();
   const { user, logout } = useAuth();
   const { width, scale, moderateScale, isVerySmall, isSmall, isTablet } = useResponsive();
@@ -464,6 +465,23 @@ const ProfileScreen = () => {
                   trackColor={{ false: 'rgba(255,255,255,0.2)', true: theme.primary }}
                   thumbColor={'#FFFFFF'}
                 />
+              </View>
+            </GlassCard>
+
+            {/* Daily AI Digest */}
+            <GlassCard style={styles.settingCard} onPress={() => navigation.navigate('Digest')}>
+              <View style={styles.settingRow}>
+                <LinearGradient
+                  colors={['#F59E0B', '#EF4444']}
+                  style={styles.settingIcon}
+                >
+                  <Newspaper size={18} color="#FFFFFF" />
+                </LinearGradient>
+                <View style={styles.settingInfo}>
+                  <Text style={[styles.settingLabel, { color: theme.text }]}>Daily AI Digest</Text>
+                  <Text style={[styles.settingValue, { color: theme.textMuted }]}>AI news summaries</Text>
+                </View>
+                <ChevronRight size={18} color={theme.textMuted} />
               </View>
             </GlassCard>
 

@@ -908,7 +908,11 @@ const ConversationListScreen = ({ navigation }) => {
         onRequestClose={() => setShowNewChatModal(false)}
       >
         <View style={styles.newChatOverlay}>
-          <ScrollView contentContainerStyle={styles.newChatScrollContent} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            contentContainerStyle={styles.newChatScrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
             {Platform.OS === 'web' ? (
               <View style={[styles.newChatModal, styles.newChatModalGlass, { borderColor: theme.glassBorder }]}>
                 <View style={[styles.modalHandle, { backgroundColor: theme.glassHighlight }]} />
@@ -1622,12 +1626,11 @@ const styles = StyleSheet.create({
   newChatOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   newChatScrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
+    alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 40,
   },

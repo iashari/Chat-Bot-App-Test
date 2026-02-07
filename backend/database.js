@@ -74,8 +74,48 @@ const initDatabase = () => {
       text TEXT NOT NULL,
       is_user INTEGER NOT NULL,
       time TEXT NOT NULL,
+      image_data TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Add image_data column if it doesn't exist (migration for existing databases)
+  try {
+    db.exec(`ALTER TABLE messages ADD COLUMN image_data TEXT`);
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Digest settings table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS digest_settings (
+      id TEXT PRIMARY KEY,
+      user_id TEXT UNIQUE NOT NULL,
+      enabled INTEGER DEFAULT 0,
+      digest_time TEXT DEFAULT '08:00',
+      timezone TEXT DEFAULT 'Asia/Jakarta',
+      topics TEXT DEFAULT '["Technology","Science"]',
+      custom_prompt TEXT DEFAULT '',
+      push_token TEXT DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Digests table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS digests (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      topics TEXT DEFAULT '[]',
+      sources TEXT DEFAULT '[]',
+      is_read INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
 
@@ -186,6 +226,13 @@ const createUser = (email, password, name) => {
       VALUES (?, ?)
     `);
     settingsStmt.run(uuidv4(), id);
+
+    // Create default digest settings for user
+    const digestStmt = db.prepare(`
+      INSERT INTO digest_settings (id, user_id)
+      VALUES (?, ?)
+    `);
+    digestStmt.run(uuidv4(), id);
 
     return { id, email: email.toLowerCase(), name };
   } catch (error) {
@@ -367,17 +414,17 @@ const getChatMessages = (chatId, userId) => {
   return stmt.all(chatId);
 };
 
-const addMessage = (chatId, userId, text, isUser, time) => {
+const addMessage = (chatId, userId, text, isUser, time, imageData = null) => {
   // Verify chat belongs to user
   const chat = getChatById(chatId, userId);
   if (!chat) return null;
 
   const id = uuidv4();
   const stmt = db.prepare(`
-    INSERT INTO messages (id, chat_id, text, is_user, time)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO messages (id, chat_id, text, is_user, time, image_data)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(id, chatId, text, isUser ? 1 : 0, time);
+  stmt.run(id, chatId, text, isUser ? 1 : 0, time, imageData);
 
   // Update chat's last message and timestamp
   const updateStmt = db.prepare(`
@@ -385,7 +432,20 @@ const addMessage = (chatId, userId, text, isUser, time) => {
   `);
   updateStmt.run(text.substring(0, 100), chatId);
 
-  return { id, chat_id: chatId, text, is_user: isUser, time };
+  return { id, chat_id: chatId, text, is_user: isUser, time, image_data: imageData };
+};
+
+const clearChatMessages = (chatId, userId) => {
+  const chat = getChatById(chatId, userId);
+  if (!chat) return false;
+
+  const stmt = db.prepare('DELETE FROM messages WHERE chat_id = ?');
+  stmt.run(chatId);
+
+  const updateStmt = db.prepare("UPDATE chats SET last_message = '', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+  updateStmt.run(chatId);
+
+  return true;
 };
 
 // ==================== STATS FUNCTIONS ====================
@@ -402,6 +462,86 @@ const getUserStats = (userId) => {
     chats: chatCount.count,
     messages: messageCount.count,
   };
+};
+
+// ==================== DIGEST FUNCTIONS ====================
+
+const getDigestSettings = (userId) => {
+  let settings = db.prepare('SELECT * FROM digest_settings WHERE user_id = ?').get(userId);
+  if (!settings) {
+    const id = uuidv4();
+    db.prepare('INSERT INTO digest_settings (id, user_id) VALUES (?, ?)').run(id, userId);
+    settings = db.prepare('SELECT * FROM digest_settings WHERE user_id = ?').get(userId);
+  }
+  return settings;
+};
+
+const createDigestSettings = (userId) => {
+  const id = uuidv4();
+  db.prepare('INSERT OR IGNORE INTO digest_settings (id, user_id) VALUES (?, ?)').run(id, userId);
+  return getDigestSettings(userId);
+};
+
+const updateDigestSettings = (userId, updates) => {
+  const allowedFields = ['enabled', 'digest_time', 'timezone', 'topics', 'custom_prompt', 'push_token'];
+  const updateFields = [];
+  const values = [];
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (allowedFields.includes(key)) {
+      updateFields.push(`${key} = ?`);
+      values.push(typeof value === 'object' ? JSON.stringify(value) : value);
+    }
+  }
+
+  if (updateFields.length === 0) return getDigestSettings(userId);
+
+  updateFields.push('updated_at = CURRENT_TIMESTAMP');
+  values.push(userId);
+
+  db.prepare(`UPDATE digest_settings SET ${updateFields.join(', ')} WHERE user_id = ?`).run(...values);
+  return getDigestSettings(userId);
+};
+
+const createDigest = (userId, title, content, topics, sources) => {
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO digests (id, user_id, title, content, topics, sources)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, userId, title, content, JSON.stringify(topics || []), JSON.stringify(sources || []));
+  return db.prepare('SELECT * FROM digests WHERE id = ?').get(id);
+};
+
+const getDigestById = (digestId, userId) => {
+  return db.prepare('SELECT * FROM digests WHERE id = ? AND user_id = ?').get(digestId, userId);
+};
+
+const getUserDigests = (userId, limit = 50) => {
+  return db.prepare('SELECT * FROM digests WHERE user_id = ? ORDER BY created_at DESC LIMIT ?').all(userId, limit);
+};
+
+const markDigestRead = (digestId, userId) => {
+  db.prepare('UPDATE digests SET is_read = 1 WHERE id = ? AND user_id = ?').run(digestId, userId);
+  return getDigestById(digestId, userId);
+};
+
+const getUnreadDigestCount = (userId) => {
+  const result = db.prepare('SELECT COUNT(*) as count FROM digests WHERE user_id = ? AND is_read = 0').get(userId);
+  return result.count;
+};
+
+const deleteDigest = (digestId, userId) => {
+  const result = db.prepare('DELETE FROM digests WHERE id = ? AND user_id = ?').run(digestId, userId);
+  return result.changes > 0;
+};
+
+const getEnabledDigestUsers = () => {
+  return db.prepare(`
+    SELECT ds.*, u.name, u.email
+    FROM digest_settings ds
+    JOIN users u ON ds.user_id = u.id
+    WHERE ds.enabled = 1
+  `).all();
 };
 
 module.exports = {
@@ -429,6 +569,18 @@ module.exports = {
   // Messages
   getChatMessages,
   addMessage,
+  clearChatMessages,
   // Stats
   getUserStats,
+  // Digest
+  getDigestSettings,
+  createDigestSettings,
+  updateDigestSettings,
+  createDigest,
+  getDigestById,
+  getUserDigests,
+  markDigestRead,
+  getUnreadDigestCount,
+  deleteDigest,
+  getEnabledDigestUsers,
 };

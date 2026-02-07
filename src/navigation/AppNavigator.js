@@ -1,24 +1,30 @@
 import React from 'react';
-import { NavigationContainer, getFocusedRouteNameFromRoute } from '@react-navigation/native';
+import { NavigationContainer, getFocusedRouteNameFromRoute, useNavigation } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { View, StyleSheet, Platform, TouchableOpacity, useWindowDimensions, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Platform, TouchableOpacity, useWindowDimensions, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
-import { MessageCircle, User } from 'lucide-react-native';
+import { MessageCircle, User, Newspaper } from 'lucide-react-native';
 
 import ConversationListScreen from '../screens/ConversationListScreen';
 import ChatDetailScreen from '../screens/ChatDetailScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import LoginScreen from '../screens/LoginScreen';
 import RegisterScreen from '../screens/RegisterScreen';
+import DigestHistoryScreen from '../screens/DigestHistoryScreen';
+import DigestDetailScreen from '../screens/DigestDetailScreen';
+import DigestSettingsScreen from '../screens/DigestSettingsScreen';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
+import { NotificationProvider, useNotification } from '../context/NotificationContext';
+import InAppNotification from '../components/InAppNotification';
+import { getUnreadDigestCount } from '../services/api';
 
 // Helper function to determine if tab bar should be visible
 const getTabBarVisibility = (route) => {
   const routeName = getFocusedRouteNameFromRoute(route) ?? 'ConversationList';
-  if (routeName === 'ChatDetail') {
+  if (routeName === 'ChatDetail' || routeName === 'DigestDetail' || routeName === 'DigestSettings') {
     return 'none';
   }
   return 'flex';
@@ -47,8 +53,19 @@ const ChatStack = () => {
   );
 };
 
+// Digest Stack (inside Digest Tab)
+const DigestStack = () => {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="DigestHistory" component={DigestHistoryScreen} />
+      <Stack.Screen name="DigestDetail" component={DigestDetailScreen} />
+      <Stack.Screen name="DigestSettings" component={DigestSettingsScreen} />
+    </Stack.Navigator>
+  );
+};
+
 // Custom Tab Bar Component
-const CustomTabBar = ({ state, descriptors, navigation }) => {
+const CustomTabBar = ({ state, descriptors, navigation, unreadDigestCount = 0 }) => {
   const { theme, isDarkMode } = useTheme();
   const { width, height } = useWindowDimensions();
 
@@ -70,6 +87,7 @@ const CustomTabBar = ({ state, descriptors, navigation }) => {
 
   const icons = {
     Chats: MessageCircle,
+    Digest: Newspaper,
     Profile: User,
   };
 
@@ -144,6 +162,7 @@ const CustomTabBar = ({ state, descriptors, navigation }) => {
             {state.routes.map((route, index) => {
               const isFocused = state.index === index;
               const Icon = icons[route.name];
+              const showBadge = route.name === 'Digest' && unreadDigestCount > 0;
 
               const onPress = () => {
                 const event = navigation.emit({
@@ -164,18 +183,25 @@ const CustomTabBar = ({ state, descriptors, navigation }) => {
                   style={tabItemStyle}
                   activeOpacity={0.7}
                 >
-                  {isFocused ? (
-                    <LinearGradient
-                      colors={[theme.gradient1, theme.gradient2]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={activeIconStyle}
-                    >
-                      <Icon size={rs.iconSize} color="#FFFFFF" strokeWidth={2.5} />
-                    </LinearGradient>
-                  ) : (
-                    <Icon size={rs.iconSize} color={theme.tabInactive} strokeWidth={2} />
-                  )}
+                  <View>
+                    {isFocused ? (
+                      <LinearGradient
+                        colors={[theme.gradient1, theme.gradient2]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={activeIconStyle}
+                      >
+                        <Icon size={rs.iconSize} color="#FFFFFF" strokeWidth={2.5} />
+                      </LinearGradient>
+                    ) : (
+                      <Icon size={rs.iconSize} color={theme.tabInactive} strokeWidth={2} />
+                    )}
+                    {showBadge && (
+                      <View style={{ position: 'absolute', top: -4, right: -8, backgroundColor: '#EF4444', borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}>
+                        <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '700' }}>{unreadDigestCount > 9 ? '9+' : unreadDigestCount}</Text>
+                      </View>
+                    )}
+                  </View>
                 </TouchableOpacity>
               );
             })}
@@ -192,6 +218,7 @@ const CustomTabBar = ({ state, descriptors, navigation }) => {
               {state.routes.map((route, index) => {
                 const isFocused = state.index === index;
                 const Icon = icons[route.name];
+                const showBadge = route.name === 'Digest' && unreadDigestCount > 0;
 
                 const onPress = () => {
                   const event = navigation.emit({
@@ -212,18 +239,25 @@ const CustomTabBar = ({ state, descriptors, navigation }) => {
                     style={tabItemStyle}
                     activeOpacity={0.7}
                   >
-                    {isFocused ? (
-                      <LinearGradient
-                        colors={[theme.gradient1, theme.gradient2]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={activeIconStyle}
-                      >
-                        <Icon size={rs.iconSize} color="#FFFFFF" strokeWidth={2.5} />
-                      </LinearGradient>
-                    ) : (
-                      <Icon size={rs.iconSize} color={theme.tabInactive} strokeWidth={2} />
-                    )}
+                    <View>
+                      {isFocused ? (
+                        <LinearGradient
+                          colors={[theme.gradient1, theme.gradient2]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={activeIconStyle}
+                        >
+                          <Icon size={rs.iconSize} color="#FFFFFF" strokeWidth={2.5} />
+                        </LinearGradient>
+                      ) : (
+                        <Icon size={rs.iconSize} color={theme.tabInactive} strokeWidth={2} />
+                      )}
+                      {showBadge && (
+                        <View style={{ position: 'absolute', top: -4, right: -8, backgroundColor: '#EF4444', borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}>
+                          <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '700' }}>{unreadDigestCount > 9 ? '9+' : unreadDigestCount}</Text>
+                        </View>
+                      )}
+                    </View>
                   </TouchableOpacity>
                 );
               })}
@@ -235,24 +269,79 @@ const CustomTabBar = ({ state, descriptors, navigation }) => {
   );
 };
 
+// Global Notification Banner (renders on top of all tabs)
+const GlobalNotificationBanner = ({ navigation }) => {
+  const { notification, dismissNotification } = useNotification();
+  return (
+    <InAppNotification
+      visible={notification.visible}
+      title={notification.title}
+      body={notification.body}
+      onPress={() => {
+        dismissNotification();
+        if (notification.digestId) {
+          navigation.navigate('Digest', {
+            screen: 'DigestDetail',
+            params: { digestId: notification.digestId },
+          });
+        }
+      }}
+      onDismiss={dismissNotification}
+    />
+  );
+};
+
 // Main Tab Navigator (authenticated)
+const MainTabsInner = () => {
+  const [unreadDigestCount, setUnreadDigestCount] = React.useState(0);
+  const navigation = useNavigation();
+
+  React.useEffect(() => {
+    const fetchUnread = async () => {
+      try {
+        const result = await getUnreadDigestCount();
+        if (result.success) setUnreadDigestCount(result.count);
+      } catch (e) {}
+    };
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <View style={{ flex: 1 }}>
+      <Tab.Navigator
+        tabBar={(props) => <CustomTabBar {...props} unreadDigestCount={unreadDigestCount} />}
+        screenOptions={{
+          headerShown: false,
+        }}
+      >
+        <Tab.Screen
+          name="Chats"
+          component={ChatStack}
+          options={({ route }) => ({
+            tabBarStyle: { display: getTabBarVisibility(route) },
+          })}
+        />
+        <Tab.Screen
+          name="Digest"
+          component={DigestStack}
+          options={({ route }) => ({
+            tabBarStyle: { display: getTabBarVisibility(route) },
+          })}
+        />
+        <Tab.Screen name="Profile" component={ProfileScreen} />
+      </Tab.Navigator>
+      <GlobalNotificationBanner navigation={navigation} />
+    </View>
+  );
+};
+
 const MainTabs = () => {
   return (
-    <Tab.Navigator
-      tabBar={(props) => <CustomTabBar {...props} />}
-      screenOptions={{
-        headerShown: false,
-      }}
-    >
-      <Tab.Screen
-        name="Chats"
-        component={ChatStack}
-        options={({ route }) => ({
-          tabBarStyle: { display: getTabBarVisibility(route) },
-        })}
-      />
-      <Tab.Screen name="Profile" component={ProfileScreen} />
-    </Tab.Navigator>
+    <NotificationProvider>
+      <MainTabsInner />
+    </NotificationProvider>
   );
 };
 

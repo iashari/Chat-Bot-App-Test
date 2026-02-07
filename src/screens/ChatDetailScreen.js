@@ -66,7 +66,7 @@ import ChatBubble from '../components/ChatBubble';
 import TypingIndicator from '../components/TypingIndicator';
 import CustomAlert from '../components/CustomAlert';
 import { useTheme } from '../context/ThemeContext';
-import { sendMessage, sendMessageStream, sendMessageWithImage, getChatById as fetchChatById } from '../services/api';
+import { sendMessage, sendMessageStream, sendMessageWithImage, getChatById as fetchChatById, clearChatMessages } from '../services/api';
 import useResponsive from '../hooks/useResponsive';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
@@ -140,6 +140,8 @@ const ChatDetailScreen = ({ route, navigation }) => {
             text: msg.text,
             isUser: msg.is_user === 1 || msg.is_user === true,
             time: msg.time || '',
+            hasImage: !!msg.image_data,
+            imageUri: msg.image_data || null,
           }));
           setMessages(loaded);
           // Scroll to bottom after messages load with animation
@@ -228,10 +230,15 @@ const ChatDetailScreen = ({ route, navigation }) => {
     setShowScrollButton(false);
   };
 
-  const getAIResponse = async (userMessage, imageBase64 = null) => {
+  const getAIResponse = async (userMessage, imageBase64 = null, currentMessages = null) => {
     setIsTyping(true);
     setShowSuggestions(false);
     setStreamingText('');
+
+    // Use passed history or fall back to current state
+    const historyToSend = (currentMessages || messages).filter(
+      msg => msg.text && msg.text.trim() && !msg.isStreaming && !msg.isError
+    );
 
     const aiMessageId = `ai-${Date.now()}`;
 
@@ -252,7 +259,7 @@ const ChatDetailScreen = ({ route, navigation }) => {
         // Stream response
         const result = await sendMessageStream(
           userMessage,
-          messages,
+          historyToSend,
           conversation.systemPrompt || '',
           conversation.id,
           (chunk, fullText) => {
@@ -294,14 +301,14 @@ const ChatDetailScreen = ({ route, navigation }) => {
           result = await sendMessageWithImage(
             userMessage,
             imageBase64,
-            messages,
+            historyToSend,
             conversation.systemPrompt || '',
             conversation.id
           );
         } else {
           result = await sendMessage(
             userMessage,
-            messages,
+            historyToSend,
             conversation.systemPrompt || '',
             conversation.id
           );
@@ -363,15 +370,18 @@ const ChatDetailScreen = ({ route, navigation }) => {
       imageUri: selectedImage?.uri,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
-    setMessages((prev) => [...prev, newMessage]);
+
+    // Build the full history including this new message before sending
+    const updatedMessages = [...messages, newMessage];
+    setMessages(updatedMessages);
     setInputText('');
 
-    // Send with or without image
+    // Send with or without image, passing the updated history
     if (selectedImage) {
-      getAIResponse(userText, selectedImage.base64);
+      getAIResponse(userText, selectedImage.base64, updatedMessages);
       setSelectedImage(null);
     } else {
-      getAIResponse(userText);
+      getAIResponse(userText, null, updatedMessages);
     }
   };
 
@@ -482,43 +492,10 @@ const ChatDetailScreen = ({ route, navigation }) => {
         const asset = result.assets[0];
         const base64Image = `data:image/jpeg;base64,${asset.base64}`;
 
-        // Store selected image
+        // Attach image to input - user can type a custom question then press send
         setSelectedImage({
           uri: asset.uri,
           base64: base64Image,
-        });
-
-        // Show preview in input or send immediately
-        setAlertConfig({
-          visible: true,
-          title: 'Image Selected',
-          message: 'What would you like to do with this image?',
-          type: 'info',
-          buttons: [
-            {
-              text: 'Cancel',
-              style: 'cancel',
-              onPress: () => setSelectedImage(null),
-            },
-            {
-              text: 'Ask AI About It',
-              onPress: () => {
-                const userMessage = inputText.trim() || 'What do you see in this image?';
-                const newMessage = {
-                  id: Date.now().toString(),
-                  text: userMessage,
-                  isUser: true,
-                  hasImage: true,
-                  imageUri: asset.uri,
-                  time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                };
-                setMessages((prev) => [...prev, newMessage]);
-                setInputText('');
-                getAIResponse(userMessage, base64Image);
-                setSelectedImage(null);
-              },
-            },
-          ],
         });
       }
     } catch (error) {
@@ -549,7 +526,12 @@ const ChatDetailScreen = ({ route, navigation }) => {
           type: 'warning',
           buttons: [
             { text: 'Cancel', style: 'cancel' },
-            { text: 'Clear', onPress: () => setMessages([]) },
+            { text: 'Clear', onPress: async () => {
+              setMessages([]);
+              if (conversation?.id) {
+                await clearChatMessages(conversation.id);
+              }
+            }},
           ],
         });
         break;
@@ -838,9 +820,9 @@ const ChatDetailScreen = ({ route, navigation }) => {
 
         {/* Selected Image Preview */}
         {selectedImage && (
-          <View style={[styles.imagePreviewBar, { backgroundColor: theme.surface, borderColor: theme.glassBorder }]}>
+          <View style={[styles.imagePreviewBar, { backgroundColor: theme.glass, borderColor: theme.glassBorder }]}>
             <Image source={{ uri: selectedImage.uri }} style={styles.imagePreviewThumb} />
-            <Text style={[styles.imagePreviewText, { color: theme.text }]}>Image attached</Text>
+            <Text style={[styles.imagePreviewText, { color: theme.text }]}>Type your question about this image</Text>
             <TouchableOpacity onPress={() => setSelectedImage(null)} style={styles.imagePreviewClose}>
               <X size={18} color={theme.textMuted} />
             </TouchableOpacity>
@@ -992,27 +974,59 @@ const ChatDetailScreen = ({ route, navigation }) => {
         </TouchableOpacity>
       </Modal>
 
-      {/* Attachment Modal */}
+      {/* Attachment Modal - Glass Style */}
       <Modal visible={showAttachModal} transparent animationType="slide" onRequestClose={() => setShowAttachModal(false)}>
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowAttachModal(false)}>
-          <View style={[styles.attachModal, { backgroundColor: theme.surface }]}>
-            <View style={[styles.modalHandle, { backgroundColor: theme.border }]} />
-            <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 24 }]}>Attach</Text>
-            <View style={styles.attachGrid}>
-              {[
-                { icon: Camera, label: 'Camera', color: theme.primary, key: 'camera' },
-                { icon: ImageIcon, label: 'Gallery', color: theme.secondary, key: 'gallery' },
-                { icon: FileText, label: 'Document', color: theme.accent, key: 'document' },
-              ].map((item, idx) => (
-                <TouchableOpacity key={idx} style={styles.attachItem} onPress={() => handleAttachment(item.key)}>
-                  <LinearGradient colors={[item.color, `${item.color}99`]} style={[styles.attachIcon, styles.floatingCard]}>
-                    <item.icon size={26} color="#FFFFFF" />
-                  </LinearGradient>
-                  <Text style={[styles.attachLabel, { color: theme.text }]}>{item.label}</Text>
-                </TouchableOpacity>
-              ))}
+          {Platform.OS === 'web' ? (
+            <View style={[
+              styles.attachModal,
+              {
+                backgroundColor: 'rgba(15, 15, 25, 0.85)',
+                borderTopWidth: 1,
+                borderColor: theme.glassBorder,
+                backdropFilter: 'blur(30px)',
+                WebkitBackdropFilter: 'blur(30px)',
+              }
+            ]}>
+              <View style={[styles.modalHandle, { backgroundColor: theme.glassHighlight }]} />
+              <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 24 }]}>Attach</Text>
+              <View style={styles.attachGrid}>
+                {[
+                  { icon: Camera, label: 'Camera', color: theme.primary, key: 'camera' },
+                  { icon: ImageIcon, label: 'Gallery', color: theme.secondary || theme.primary, key: 'gallery' },
+                  { icon: FileText, label: 'Document', color: theme.accent || theme.primary, key: 'document' },
+                ].map((item, idx) => (
+                  <TouchableOpacity key={idx} style={styles.attachItem} onPress={() => handleAttachment(item.key)}>
+                    <LinearGradient colors={[item.color, `${item.color}99`]} style={[styles.attachIcon, styles.glowIcon]}>
+                      <item.icon size={26} color="#FFFFFF" />
+                    </LinearGradient>
+                    <Text style={[styles.attachLabel, { color: theme.text }]}>{item.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
-          </View>
+          ) : (
+            <BlurView intensity={30} tint={theme.background === '#0A0A0F' ? 'dark' : 'light'} style={[styles.attachModal, { overflow: 'hidden', borderTopWidth: 1 }]}>
+              <View style={[{ padding: 24, paddingBottom: 40, borderTopWidth: 1, borderColor: theme.glassBorder }]}>
+                <View style={[styles.modalHandle, { backgroundColor: theme.glassHighlight }]} />
+                <Text style={[styles.modalTitle, { color: theme.text, marginBottom: 24 }]}>Attach</Text>
+                <View style={styles.attachGrid}>
+                  {[
+                    { icon: Camera, label: 'Camera', color: theme.primary, key: 'camera' },
+                    { icon: ImageIcon, label: 'Gallery', color: theme.secondary || theme.primary, key: 'gallery' },
+                    { icon: FileText, label: 'Document', color: theme.accent || theme.primary, key: 'document' },
+                  ].map((item, idx) => (
+                    <TouchableOpacity key={idx} style={styles.attachItem} onPress={() => handleAttachment(item.key)}>
+                      <LinearGradient colors={[item.color, `${item.color}99`]} style={[styles.attachIcon, styles.glowIcon]}>
+                        <item.icon size={26} color="#FFFFFF" />
+                      </LinearGradient>
+                      <Text style={[styles.attachLabel, { color: theme.text }]}>{item.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </BlurView>
+          )}
         </TouchableOpacity>
       </Modal>
 

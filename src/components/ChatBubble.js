@@ -42,6 +42,13 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read', hasImage, 
   const slideAnim = useRef(new Animated.Value(isUser ? 20 : -20)).current;
   const scaleAnim = useRef(new Animated.Value(0.95)).current;
 
+  // Streaming cursor blink animation
+  const cursorAnim = useRef(new Animated.Value(1)).current;
+  // Streaming dots pulse animation
+  const dot1Anim = useRef(new Animated.Value(0.3)).current;
+  const dot2Anim = useRef(new Animated.Value(0.3)).current;
+  const dot3Anim = useRef(new Animated.Value(0.3)).current;
+
   useEffect(() => {
     Animated.parallel([
       Animated.timing(fadeAnim, {
@@ -62,6 +69,47 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read', hasImage, 
       }),
     ]).start();
   }, []);
+
+  // Blinking cursor animation for streaming
+  useEffect(() => {
+    if (isStreaming) {
+      const blink = Animated.loop(
+        Animated.sequence([
+          Animated.timing(cursorAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
+          Animated.timing(cursorAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
+        ])
+      );
+      blink.start();
+
+      // Pulsing dots with staggered delay
+      const dots = Animated.loop(
+        Animated.stagger(200, [
+          Animated.sequence([
+            Animated.timing(dot1Anim, { toValue: 1, duration: 400, useNativeDriver: true }),
+            Animated.timing(dot1Anim, { toValue: 0.3, duration: 400, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.timing(dot2Anim, { toValue: 1, duration: 400, useNativeDriver: true }),
+            Animated.timing(dot2Anim, { toValue: 0.3, duration: 400, useNativeDriver: true }),
+          ]),
+          Animated.sequence([
+            Animated.timing(dot3Anim, { toValue: 1, duration: 400, useNativeDriver: true }),
+            Animated.timing(dot3Anim, { toValue: 0.3, duration: 400, useNativeDriver: true }),
+          ]),
+        ])
+      );
+      dots.start();
+
+      return () => {
+        blink.stop();
+        dots.stop();
+        cursorAnim.setValue(1);
+        dot1Anim.setValue(0.3);
+        dot2Anim.setValue(0.3);
+        dot3Anim.setValue(0.3);
+      };
+    }
+  }, [isStreaming]);
 
   const handleCopy = async () => {
     try {
@@ -300,14 +348,16 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read', hasImage, 
                 }
               ]}>
                 {message}
-                {isStreaming && <Text style={{ color: topicTheme?.accent || theme.primary }}>▊</Text>}
               </Text>
+              {isStreaming && (
+                <Animated.Text style={{ color: topicTheme?.accent || theme.primary, opacity: cursorAnim, fontSize: rs.fontSize, marginTop: -2 }}>▊</Animated.Text>
+              )}
               <View style={[styles.userTimestampRow, { marginTop: rs.gap, gap: rs.gap }]}>
                 {isStreaming && (
                   <View style={styles.streamingIndicator}>
-                    <Animated.View style={[styles.streamingDot, { opacity: 0.4 }]} />
-                    <Animated.View style={[styles.streamingDot, { opacity: 0.7 }]} />
-                    <Animated.View style={[styles.streamingDot, { opacity: 1 }]} />
+                    <Animated.View style={[styles.streamingDot, { opacity: dot1Anim, backgroundColor: topicTheme?.accent || '#A78BFA' }]} />
+                    <Animated.View style={[styles.streamingDot, { opacity: dot2Anim, backgroundColor: topicTheme?.accent || '#A78BFA' }]} />
+                    <Animated.View style={[styles.streamingDot, { opacity: dot3Anim, backgroundColor: topicTheme?.accent || '#A78BFA' }]} />
                   </View>
                 )}
                 <Text style={[
@@ -354,14 +404,16 @@ const ChatBubble = ({ message, isUser, time, isLast, status = 'read', hasImage, 
                   }
                 ]}>
                   {message}
-                  {isStreaming && <Text style={{ color: topicTheme?.accent || theme.primary }}>▊</Text>}
                 </Text>
+                {isStreaming && (
+                  <Animated.Text style={{ color: topicTheme?.accent || theme.primary, opacity: cursorAnim, fontSize: rs.fontSize, marginTop: -2 }}>▊</Animated.Text>
+                )}
                 <View style={[styles.userTimestampRow, { marginTop: rs.gap, gap: rs.gap }]}>
                   {isStreaming && (
                     <View style={styles.streamingIndicator}>
-                      <View style={[styles.streamingDot, { opacity: 0.4 }]} />
-                      <View style={[styles.streamingDot, { opacity: 0.7 }]} />
-                      <View style={[styles.streamingDot, { opacity: 1 }]} />
+                      <Animated.View style={[styles.streamingDot, { opacity: dot1Anim, backgroundColor: topicTheme?.accent || '#A78BFA' }]} />
+                      <Animated.View style={[styles.streamingDot, { opacity: dot2Anim, backgroundColor: topicTheme?.accent || '#A78BFA' }]} />
+                      <Animated.View style={[styles.streamingDot, { opacity: dot3Anim, backgroundColor: topicTheme?.accent || '#A78BFA' }]} />
                     </View>
                   )}
                   <Text style={[
