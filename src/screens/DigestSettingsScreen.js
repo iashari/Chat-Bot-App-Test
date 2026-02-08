@@ -24,6 +24,7 @@ import {
   Star,
   Check,
   X,
+  Globe,
 } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 import { useNotification } from '../context/NotificationContext';
@@ -40,6 +41,8 @@ const AVAILABLE_TOPICS = [
   'Health',
 ];
 
+const AVAILABLE_LANGUAGES = ['English', 'Indonesian', 'Spanish', 'French', 'Japanese', 'Korean', 'Chinese', 'Arabic'];
+
 const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0') + ':00');
 
 const DigestSettingsScreen = ({ navigation }) => {
@@ -49,6 +52,7 @@ const DigestSettingsScreen = ({ navigation }) => {
   const [digestTime, setDigestTime] = useState('08:00');
   const [selectedTopics, setSelectedTopics] = useState(['Technology', 'Science']);
   const [customPrompt, setCustomPrompt] = useState('');
+  const [selectedLanguage, setSelectedLanguage] = useState('English');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -73,6 +77,7 @@ const DigestSettingsScreen = ({ navigation }) => {
         setEnabled(!!result.settings.enabled);
         setDigestTime(result.settings.digest_time || '08:00');
         setCustomPrompt(result.settings.custom_prompt || '');
+        setSelectedLanguage(result.settings.language || 'English');
         try {
           const topics = JSON.parse(result.settings.topics || '["Technology","Science"]');
           setSelectedTopics(topics);
@@ -95,6 +100,7 @@ const DigestSettingsScreen = ({ navigation }) => {
         digest_time: digestTime,
         topics: JSON.stringify(selectedTopics),
         custom_prompt: customPrompt,
+        language: selectedLanguage,
       });
       setHasChanges(false);
     } catch (error) {
@@ -113,6 +119,7 @@ const DigestSettingsScreen = ({ navigation }) => {
         digest_time: digestTime,
         topics: JSON.stringify(selectedTopics),
         custom_prompt: customPrompt,
+        language: selectedLanguage,
       });
       const result = await triggerTestDigest();
       if (result.success) {
@@ -249,6 +256,50 @@ const DigestSettingsScreen = ({ navigation }) => {
                         ) : (
                           <View style={[styles.chip, styles.chipUnselected]}>
                             <Text style={[styles.chipText, { color: theme.textMuted }]}>{topic}</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </GlassCard>
+            </View>
+
+            {/* Language Picker */}
+            <View style={styles.section}>
+              <Text style={[styles.sectionLabel, { color: theme.textMuted }]}>DIGEST LANGUAGE</Text>
+              <GlassCard>
+                <View style={styles.settingRow}>
+                  <LinearGradient colors={[theme.gradient1, theme.gradient2]} style={styles.settingIcon}>
+                    <Globe size={18} color="#FFFFFF" />
+                  </LinearGradient>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.settingLabel, { color: theme.text }]}>Language</Text>
+                    <Text style={[styles.settingDesc, { color: theme.textMuted }]}>
+                      AI will generate digest in this language
+                    </Text>
+                  </View>
+                </View>
+                <View style={[styles.chipContainer, { marginTop: 14 }]}>
+                  {AVAILABLE_LANGUAGES.map(lang => {
+                    const isSelected = selectedLanguage === lang;
+                    return (
+                      <TouchableOpacity
+                        key={lang}
+                        onPress={() => { setSelectedLanguage(lang); setHasChanges(true); }}
+                        activeOpacity={0.7}
+                      >
+                        {isSelected ? (
+                          <LinearGradient
+                            colors={[theme.gradient1, theme.gradient2]}
+                            style={styles.chip}
+                          >
+                            <Text style={styles.chipTextSelected}>{lang}</Text>
+                            <Check size={14} color="#FFFFFF" />
+                          </LinearGradient>
+                        ) : (
+                          <View style={[styles.chip, styles.chipUnselected]}>
+                            <Text style={[styles.chipText, { color: theme.textMuted }]}>{lang}</Text>
                           </View>
                         )}
                       </TouchableOpacity>

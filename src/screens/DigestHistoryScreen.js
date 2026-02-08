@@ -9,6 +9,7 @@ import {
   Animated,
   Platform,
   Dimensions,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,11 +21,13 @@ import {
   ChevronRight,
   Circle,
   Trash2,
+  Bookmark,
+  Share2,
 } from 'lucide-react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { useTheme } from '../context/ThemeContext';
 import { useNotification } from '../context/NotificationContext';
-import { getDigests, deleteDigest } from '../services/api';
+import { getDigests, deleteDigest, toggleBookmarkDigest } from '../services/api';
 import CustomAlert from '../components/CustomAlert';
 
 const { width: screenWidth } = Dimensions.get('window');
@@ -40,7 +43,7 @@ const TOPIC_COLORS = {
 
 const DigestHistoryScreen = ({ navigation }) => {
   const { theme, isDarkMode } = useTheme();
-  const { dismissNotification } = useNotification();
+  const { dismissNotification, refreshUnreadCount } = useNotification();
   const [digests, setDigests] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -60,6 +63,7 @@ const DigestHistoryScreen = ({ navigation }) => {
     useCallback(() => {
       dismissNotification();
       loadDigests();
+      refreshUnreadCount();
     }, [])
   );
 
@@ -105,6 +109,31 @@ const DigestHistoryScreen = ({ navigation }) => {
         },
       ],
     });
+  };
+
+  const handleBookmark = async (digest) => {
+    try {
+      const result = await toggleBookmarkDigest(digest.id);
+      if (result.success) {
+        setDigests(prev => prev.map(d => d.id === digest.id ? { ...d, is_bookmarked: result.digest.is_bookmarked } : d));
+      }
+    } catch (error) {
+      console.error('Bookmark error:', error);
+    }
+  };
+
+  const handleShareDigest = async (digest) => {
+    const contentPreview = digest.content
+      ? digest.content.replace(/[#*_\[\]]/g, '').substring(0, 300) + '...'
+      : '';
+    try {
+      await Share.share({
+        title: digest.title,
+        message: `${digest.title}\n\n${contentPreview}\n\nShared from AI Chat App - Daily Digest`,
+      });
+    } catch (error) {
+      console.error('Share error:', error);
+    }
   };
 
   const formatDate = (dateStr) => {
@@ -204,7 +233,7 @@ const DigestHistoryScreen = ({ navigation }) => {
 
             <View style={styles.digestFooter}>
               <View style={styles.digestTags}>
-                {topics.slice(0, 3).map(topic => (
+                {topics.slice(0, 2).map(topic => (
                   <View
                     key={topic}
                     style={[styles.topicTag, { backgroundColor: (TOPIC_COLORS[topic] || theme.primary) + '20' }]}
@@ -220,8 +249,24 @@ const DigestHistoryScreen = ({ navigation }) => {
                   {formatDate(digest.created_at)}
                 </Text>
                 <TouchableOpacity
+                  onPress={(e) => { e.stopPropagation(); handleBookmark(digest); }}
+                  style={styles.actionButton}
+                  activeOpacity={0.6}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Bookmark size={14} color={digest.is_bookmarked ? '#F59E0B' : theme.textMuted} fill={digest.is_bookmarked ? '#F59E0B' : 'none'} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={(e) => { e.stopPropagation(); handleShareDigest(digest); }}
+                  style={styles.actionButton}
+                  activeOpacity={0.6}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Share2 size={14} color={theme.textMuted} />
+                </TouchableOpacity>
+                <TouchableOpacity
                   onPress={(e) => { e.stopPropagation(); handleDelete(digest); }}
-                  style={styles.deleteButton}
+                  style={styles.actionButton}
                   activeOpacity={0.6}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
@@ -336,9 +381,9 @@ const styles = StyleSheet.create({
   digestTitle: { fontSize: 16, fontWeight: '700', flex: 1, marginRight: 8 },
   digestPreview: { fontSize: 13, lineHeight: 19, marginBottom: 12 },
   digestFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  digestFooterRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  deleteButton: { padding: 4 },
-  digestTags: { flexDirection: 'row', gap: 6, flex: 1 },
+  digestFooterRight: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 },
+  actionButton: { padding: 4 },
+  digestTags: { flexDirection: 'row', gap: 6, flex: 1, overflow: 'hidden' },
   topicTag: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   topicTagText: { fontSize: 11, fontWeight: '600' },
   digestDate: { fontSize: 12, fontWeight: '500' },

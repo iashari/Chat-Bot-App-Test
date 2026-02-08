@@ -20,7 +20,8 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "softwareKeyboardLayoutMode": "adjustResize"
     },
     "web": {
       "favicon": "./assets/favicon.png",
@@ -28,6 +29,9 @@
       "shortName": "AI Chat",
       "backgroundColor": "#0A0A0F",
       "themeColor": "#A78BFA"
-    }
+    },
+    "plugins": [
+      "expo-web-browser"
+    ]
   }
 }

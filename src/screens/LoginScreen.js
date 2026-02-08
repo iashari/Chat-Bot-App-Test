@@ -40,7 +40,10 @@ import {
 
 const LoginScreen = ({ navigation }) => {
   const { theme, isDarkMode } = useTheme();
-  const { login } = useAuth();
+  const { login, signInWithGoogle, signInWithMagicLink } = useAuth();
+  const [magicLinkMode, setMagicLinkMode] = useState(false);
+  const [magicLinkLoading, setMagicLinkLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const { width, height } = useWindowDimensions();
 
   const [email, setEmail] = useState('');
@@ -183,6 +186,51 @@ const LoginScreen = ({ navigation }) => {
         visible: true,
         title: 'Login Failed',
         message: result.error || 'Please check your credentials',
+        type: 'error',
+        buttons: [{ text: 'Try Again', style: 'default' }],
+      });
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setGoogleLoading(true);
+    const result = await signInWithGoogle();
+    setGoogleLoading(false);
+
+    if (!result.success) {
+      setAlertConfig({
+        visible: true,
+        title: 'Google Sign-In Failed',
+        message: result.error || 'Could not sign in with Google',
+        type: 'error',
+        buttons: [{ text: 'OK', style: 'default' }],
+      });
+    }
+  };
+
+  const handleMagicLink = async () => {
+    if (!email.trim() || !/\S+@\S+\.\S+/.test(email)) {
+      setErrors({ email: 'Please enter a valid email for magic link' });
+      return;
+    }
+
+    setMagicLinkLoading(true);
+    const result = await signInWithMagicLink(email);
+    setMagicLinkLoading(false);
+
+    if (result.success) {
+      setAlertConfig({
+        visible: true,
+        title: 'Magic Link Sent!',
+        message: result.message || 'Check your email for the login link.',
+        type: 'success',
+        buttons: [{ text: 'OK', style: 'default' }],
+      });
+    } else {
+      setAlertConfig({
+        visible: true,
+        title: 'Magic Link Failed',
+        message: result.error || 'Could not send magic link',
         type: 'error',
         buttons: [{ text: 'Try Again', style: 'default' }],
       });
@@ -367,6 +415,60 @@ const LoginScreen = ({ navigation }) => {
         <Text style={[styles.registerButtonText, { color: theme.text, fontSize: rs.buttonFontSize - 2 }]}>
           Create new account
         </Text>
+      </TouchableOpacity>
+
+      {/* Google Sign-In Button (Bonus) */}
+      <TouchableOpacity
+        onPress={handleGoogleLogin}
+        disabled={googleLoading}
+        activeOpacity={0.8}
+        style={[
+          styles.socialButton,
+          {
+            borderColor: theme.glassBorder,
+            height: rs.buttonHeight,
+            borderRadius: rs.buttonRadius,
+            marginTop: rs.inputMarginBottom,
+          }
+        ]}
+      >
+        {googleLoading ? (
+          <ActivityIndicator color={theme.text} size="small" />
+        ) : (
+          <>
+            <Text style={{ fontSize: rs.inputIconSize }}>G</Text>
+            <Text style={[styles.socialButtonText, { color: theme.text, fontSize: rs.buttonFontSize - 2 }]}>
+              Sign in with Google
+            </Text>
+          </>
+        )}
+      </TouchableOpacity>
+
+      {/* Magic Link Button (Bonus) */}
+      <TouchableOpacity
+        onPress={handleMagicLink}
+        disabled={magicLinkLoading}
+        activeOpacity={0.8}
+        style={[
+          styles.socialButton,
+          {
+            borderColor: theme.glassBorder,
+            height: rs.buttonHeight,
+            borderRadius: rs.buttonRadius,
+            marginTop: rs.inputMarginBottom,
+          }
+        ]}
+      >
+        {magicLinkLoading ? (
+          <ActivityIndicator color={theme.text} size="small" />
+        ) : (
+          <>
+            <Mail size={rs.inputIconSize} color={theme.primary} />
+            <Text style={[styles.socialButtonText, { color: theme.text, fontSize: rs.buttonFontSize - 2 }]}>
+              Send Magic Link
+            </Text>
+          </>
+        )}
       </TouchableOpacity>
     </>
   );
@@ -628,6 +730,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   registerButtonText: {
+    fontWeight: '600',
+  },
+  socialButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    gap: 10,
+  },
+  socialButtonText: {
     fontWeight: '600',
   },
   footer: {

@@ -5,7 +5,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { View, Text, StyleSheet, Platform, TouchableOpacity, useWindowDimensions, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { BlurView } from 'expo-blur';
-import { MessageCircle, User, Newspaper } from 'lucide-react-native';
+import { MessageCircle, User, Newspaper, Users } from 'lucide-react-native';
 
 import ConversationListScreen from '../screens/ConversationListScreen';
 import ChatDetailScreen from '../screens/ChatDetailScreen';
@@ -15,16 +15,21 @@ import RegisterScreen from '../screens/RegisterScreen';
 import DigestHistoryScreen from '../screens/DigestHistoryScreen';
 import DigestDetailScreen from '../screens/DigestDetailScreen';
 import DigestSettingsScreen from '../screens/DigestSettingsScreen';
+import RoomListScreen from '../screens/RoomListScreen';
+import RoomChatScreen from '../screens/RoomChatScreen';
+import CreateRoomScreen from '../screens/CreateRoomScreen';
+import UserSearchScreen from '../screens/UserSearchScreen';
+import RoomInfoScreen from '../screens/RoomInfoScreen';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { NotificationProvider, useNotification } from '../context/NotificationContext';
 import InAppNotification from '../components/InAppNotification';
-import { getUnreadDigestCount } from '../services/api';
 
 // Helper function to determine if tab bar should be visible
 const getTabBarVisibility = (route) => {
-  const routeName = getFocusedRouteNameFromRoute(route) ?? 'ConversationList';
-  if (routeName === 'ChatDetail' || routeName === 'DigestDetail' || routeName === 'DigestSettings') {
+  const routeName = getFocusedRouteNameFromRoute(route) ?? '';
+  const hiddenScreens = ['ChatDetail', 'DigestDetail', 'DigestSettings', 'RoomChat', 'CreateRoom', 'UserSearch', 'RoomInfo'];
+  if (hiddenScreens.includes(routeName)) {
     return 'none';
   }
   return 'flex';
@@ -49,6 +54,19 @@ const ChatStack = () => {
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="ConversationList" component={ConversationListScreen} />
       <Stack.Screen name="ChatDetail" component={ChatDetailScreen} />
+    </Stack.Navigator>
+  );
+};
+
+// Room Stack (inside Rooms Tab)
+const RoomStack = () => {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="RoomList" component={RoomListScreen} />
+      <Stack.Screen name="RoomChat" component={RoomChatScreen} />
+      <Stack.Screen name="CreateRoom" component={CreateRoomScreen} />
+      <Stack.Screen name="UserSearch" component={UserSearchScreen} />
+      <Stack.Screen name="RoomInfo" component={RoomInfoScreen} />
     </Stack.Navigator>
   );
 };
@@ -80,22 +98,22 @@ const CustomTabBar = ({ state, descriptors, navigation, unreadDigestCount = 0 })
     tabBarBottom: Platform.OS === 'ios'
       ? (isVerySmall ? 16 : isSmall ? 20 : isTablet ? 40 : 30)
       : (isVerySmall ? 12 : isSmall ? 16 : isTablet ? 30 : 20),
-    tabBarHorizontal: isVerySmall ? 40 : isSmall ? 50 : isTablet ? '30%' : 60,
+    tabBarHorizontal: isVerySmall ? 30 : isSmall ? 36 : isTablet ? '25%' : 40,
     activeIconSize: isVerySmall ? 36 : isSmall ? 40 : isTablet ? 52 : 44,
     iconSize: isVerySmall ? 16 : isSmall ? 18 : isTablet ? 24 : 20,
   };
 
   const icons = {
     Chats: MessageCircle,
+    Rooms: Users,
     Digest: Newspaper,
     Profile: User,
   };
 
-  // Check if we should hide the tab bar (when on ChatDetail screen)
+  // Check if we should hide the tab bar
   const currentRoute = state.routes[state.index];
   const { options } = descriptors[currentRoute.key];
 
-  // Check both the computed visibility and options
   const tabBarDisplay = getTabBarVisibility(currentRoute);
   const styleDisplay = options.tabBarStyle?.display;
 
@@ -109,7 +127,7 @@ const CustomTabBar = ({ state, descriptors, navigation, unreadDigestCount = 0 })
     left: typeof rs.tabBarHorizontal === 'string' ? rs.tabBarHorizontal : rs.tabBarHorizontal,
     right: typeof rs.tabBarHorizontal === 'string' ? rs.tabBarHorizontal : rs.tabBarHorizontal,
     height: rs.tabBarHeight,
-    maxWidth: isTablet ? 400 : 300,
+    maxWidth: isTablet ? 450 : 340,
     alignSelf: 'center',
   };
 
@@ -143,6 +161,54 @@ const CustomTabBar = ({ state, descriptors, navigation, unreadDigestCount = 0 })
     elevation: 15,
   };
 
+  const renderTabs = () =>
+    state.routes.map((route, index) => {
+      const isFocused = state.index === index;
+      const Icon = icons[route.name];
+      const showBadge = route.name === 'Digest' && unreadDigestCount > 0;
+
+      const onPress = () => {
+        const event = navigation.emit({
+          type: 'tabPress',
+          target: route.key,
+          canPreventDefault: true,
+        });
+
+        if (!isFocused && !event.defaultPrevented) {
+          navigation.navigate(route.name);
+        }
+      };
+
+      return (
+        <TouchableOpacity
+          key={route.key}
+          onPress={onPress}
+          style={tabItemStyle}
+          activeOpacity={0.7}
+        >
+          <View>
+            {isFocused ? (
+              <LinearGradient
+                colors={[theme.gradient1, theme.gradient2]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={activeIconStyle}
+              >
+                <Icon size={rs.iconSize} color="#FFFFFF" strokeWidth={2.5} />
+              </LinearGradient>
+            ) : (
+              <Icon size={rs.iconSize} color={theme.tabInactive} strokeWidth={2} />
+            )}
+            {showBadge && (
+              <View style={{ position: 'absolute', top: -4, right: -8, backgroundColor: '#EF4444', borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}>
+                <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '700' }}>{unreadDigestCount > 9 ? '9+' : unreadDigestCount}</Text>
+              </View>
+            )}
+          </View>
+        </TouchableOpacity>
+      );
+    });
+
   return (
     <View style={tabBarStyle}>
       {Platform.OS === 'web' ? (
@@ -159,52 +225,7 @@ const CustomTabBar = ({ state, descriptors, navigation, unreadDigestCount = 0 })
           ]}
         >
           <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' }}>
-            {state.routes.map((route, index) => {
-              const isFocused = state.index === index;
-              const Icon = icons[route.name];
-              const showBadge = route.name === 'Digest' && unreadDigestCount > 0;
-
-              const onPress = () => {
-                const event = navigation.emit({
-                  type: 'tabPress',
-                  target: route.key,
-                  canPreventDefault: true,
-                });
-
-                if (!isFocused && !event.defaultPrevented) {
-                  navigation.navigate(route.name);
-                }
-              };
-
-              return (
-                <TouchableOpacity
-                  key={route.key}
-                  onPress={onPress}
-                  style={tabItemStyle}
-                  activeOpacity={0.7}
-                >
-                  <View>
-                    {isFocused ? (
-                      <LinearGradient
-                        colors={[theme.gradient1, theme.gradient2]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={activeIconStyle}
-                      >
-                        <Icon size={rs.iconSize} color="#FFFFFF" strokeWidth={2.5} />
-                      </LinearGradient>
-                    ) : (
-                      <Icon size={rs.iconSize} color={theme.tabInactive} strokeWidth={2} />
-                    )}
-                    {showBadge && (
-                      <View style={{ position: 'absolute', top: -4, right: -8, backgroundColor: '#EF4444', borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}>
-                        <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '700' }}>{unreadDigestCount > 9 ? '9+' : unreadDigestCount}</Text>
-                      </View>
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
+            {renderTabs()}
           </View>
         </View>
       ) : (
@@ -215,52 +236,7 @@ const CustomTabBar = ({ state, descriptors, navigation, unreadDigestCount = 0 })
         >
           <View style={[{ flex: 1, borderRadius: rs.tabBarRadius, borderWidth: 1 }, { borderColor: 'rgba(255, 255, 255, 0.15)' }]}>
             <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' }}>
-              {state.routes.map((route, index) => {
-                const isFocused = state.index === index;
-                const Icon = icons[route.name];
-                const showBadge = route.name === 'Digest' && unreadDigestCount > 0;
-
-                const onPress = () => {
-                  const event = navigation.emit({
-                    type: 'tabPress',
-                    target: route.key,
-                    canPreventDefault: true,
-                  });
-
-                  if (!isFocused && !event.defaultPrevented) {
-                    navigation.navigate(route.name);
-                  }
-                };
-
-                return (
-                  <TouchableOpacity
-                    key={route.key}
-                    onPress={onPress}
-                    style={tabItemStyle}
-                    activeOpacity={0.7}
-                  >
-                    <View>
-                      {isFocused ? (
-                        <LinearGradient
-                          colors={[theme.gradient1, theme.gradient2]}
-                          start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
-                          style={activeIconStyle}
-                        >
-                          <Icon size={rs.iconSize} color="#FFFFFF" strokeWidth={2.5} />
-                        </LinearGradient>
-                      ) : (
-                        <Icon size={rs.iconSize} color={theme.tabInactive} strokeWidth={2} />
-                      )}
-                      {showBadge && (
-                        <View style={{ position: 'absolute', top: -4, right: -8, backgroundColor: '#EF4444', borderRadius: 8, minWidth: 16, height: 16, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 }}>
-                          <Text style={{ color: '#FFF', fontSize: 9, fontWeight: '700' }}>{unreadDigestCount > 9 ? '9+' : unreadDigestCount}</Text>
-                        </View>
-                      )}
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
+              {renderTabs()}
             </View>
           </View>
         </BlurView>
@@ -273,45 +249,36 @@ const CustomTabBar = ({ state, descriptors, navigation, unreadDigestCount = 0 })
 const GlobalNotificationBanner = ({ navigation }) => {
   const { notification, dismissNotification } = useNotification();
   return (
-    <InAppNotification
-      visible={notification.visible}
-      title={notification.title}
-      body={notification.body}
-      onPress={() => {
-        dismissNotification();
-        if (notification.digestId) {
-          navigation.navigate('Digest', {
-            screen: 'DigestDetail',
-            params: { digestId: notification.digestId },
-          });
-        }
-      }}
-      onDismiss={dismissNotification}
-    />
+    <View pointerEvents="box-none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999, elevation: 99999 }}>
+      <InAppNotification
+        visible={notification.visible}
+        title={notification.title}
+        body={notification.body}
+        onPress={() => {
+          const digestId = notification.digestId;
+          dismissNotification();
+          if (digestId) {
+            navigation.navigate('Digest', {
+              screen: 'DigestDetail',
+              params: { digestId },
+            });
+          }
+        }}
+        onDismiss={dismissNotification}
+      />
+    </View>
   );
 };
 
 // Main Tab Navigator (authenticated)
 const MainTabsInner = () => {
-  const [unreadDigestCount, setUnreadDigestCount] = React.useState(0);
+  const { unreadCount } = useNotification();
   const navigation = useNavigation();
-
-  React.useEffect(() => {
-    const fetchUnread = async () => {
-      try {
-        const result = await getUnreadDigestCount();
-        if (result.success) setUnreadDigestCount(result.count);
-      } catch (e) {}
-    };
-    fetchUnread();
-    const interval = setInterval(fetchUnread, 30000);
-    return () => clearInterval(interval);
-  }, []);
 
   return (
     <View style={{ flex: 1 }}>
       <Tab.Navigator
-        tabBar={(props) => <CustomTabBar {...props} unreadDigestCount={unreadDigestCount} />}
+        tabBar={(props) => <CustomTabBar {...props} unreadDigestCount={unreadCount} />}
         screenOptions={{
           headerShown: false,
         }}
@@ -319,6 +286,13 @@ const MainTabsInner = () => {
         <Tab.Screen
           name="Chats"
           component={ChatStack}
+          options={({ route }) => ({
+            tabBarStyle: { display: getTabBarVisibility(route) },
+          })}
+        />
+        <Tab.Screen
+          name="Rooms"
+          component={RoomStack}
           options={({ route }) => ({
             tabBarStyle: { display: getTabBarVisibility(route) },
           })}

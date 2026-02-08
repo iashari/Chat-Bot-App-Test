@@ -10,6 +10,7 @@ import {
   Platform,
   Animated,
   Dimensions,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,9 +21,10 @@ import {
   Globe,
   Calendar,
   Share2,
+  Bookmark,
 } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
-import { getDigestById } from '../services/api';
+import { getDigestById, toggleBookmarkDigest } from '../services/api';
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -163,6 +165,7 @@ const DigestDetailScreen = ({ route, navigation }) => {
   const { digestId } = route.params;
   const [digest, setDigest] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isBookmarked, setIsBookmarked] = useState(false);
 
   const headerAnim = useRef(new Animated.Value(0)).current;
   const contentAnim = useRef(new Animated.Value(0)).current;
@@ -180,6 +183,7 @@ const DigestDetailScreen = ({ route, navigation }) => {
       const result = await getDigestById(digestId);
       if (result.success) {
         setDigest(result.digest);
+        setIsBookmarked(!!result.digest.is_bookmarked);
       }
     } catch (error) {
       console.error('Load digest error:', error);
@@ -198,6 +202,33 @@ const DigestDetailScreen = ({ route, navigation }) => {
       hour: '2-digit',
       minute: '2-digit',
     });
+  };
+
+  const handleShare = async () => {
+    if (!digest) return;
+    const contentPreview = digest.content
+      ? digest.content.replace(/[#*_\[\]]/g, '').substring(0, 300) + '...'
+      : '';
+    try {
+      await Share.share({
+        title: digest.title,
+        message: `${digest.title}\n\n${contentPreview}\n\nShared from AI Chat App - Daily Digest`,
+      });
+    } catch (error) {
+      console.error('Share error:', error);
+    }
+  };
+
+  const handleBookmark = async () => {
+    if (!digest) return;
+    try {
+      const result = await toggleBookmarkDigest(digest.id);
+      if (result.success) {
+        setIsBookmarked(!!result.digest.is_bookmarked);
+      }
+    } catch (error) {
+      console.error('Bookmark error:', error);
+    }
   };
 
   const GlassCard = ({ children, style }) => {
@@ -258,7 +289,14 @@ const DigestDetailScreen = ({ route, navigation }) => {
             <ArrowLeft size={22} color={theme.text} />
           </TouchableOpacity>
           <Text style={[styles.headerTitle, { color: theme.text }]} numberOfLines={1}>Digest</Text>
-          <View style={{ width: 40 }} />
+          <View style={styles.headerActions}>
+            <TouchableOpacity onPress={handleBookmark} style={styles.headerButton} activeOpacity={0.7}>
+              <Bookmark size={20} color={isBookmarked ? '#F59E0B' : theme.text} fill={isBookmarked ? '#F59E0B' : 'none'} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={handleShare} style={styles.headerButton} activeOpacity={0.7}>
+              <Share2 size={20} color={theme.text} />
+            </TouchableOpacity>
+          </View>
         </Animated.View>
 
         <Animated.View style={{ flex: 1, opacity: contentAnim }}>
@@ -359,6 +397,15 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)',
   },
   headerTitle: { fontSize: 18, fontWeight: '700', flex: 1, textAlign: 'center' },
+  headerActions: { flexDirection: 'row', gap: 6 },
+  headerButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
   scrollView: { flex: 1, width: '100%', maxWidth: screenWidth >= 768 ? 600 : '100%' },
   section: { paddingHorizontal: 24, marginBottom: 20 },
   sectionLabel: { fontSize: 11, fontWeight: '600', letterSpacing: 1, marginBottom: 12, marginLeft: 4 },

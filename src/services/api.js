@@ -1,227 +1,34 @@
-// API Service for AI Chat App with Authentication
-import AsyncStorage from '@react-native-async-storage/async-storage';
+// API Service for AI Chat App with Supabase Auth
+import { supabase } from '../lib/supabase';
 
-const API_BASE_URL = 'http://localhost:3001';
+const API_BASE_URL = 'http://192.168.1.60:3001';
 
-// Token management
-let authToken = null;
-
-export const setAuthToken = (token) => {
-  authToken = token;
-};
-
-export const getAuthToken = () => authToken;
-
-// Store token persistently
-export const saveToken = async (token) => {
-  try {
-    await AsyncStorage.setItem('auth_token', token);
-    authToken = token;
-  } catch (error) {
-    console.error('Error saving token:', error);
-  }
-};
-
-// Load token from storage
-export const loadToken = async () => {
-  try {
-    const token = await AsyncStorage.getItem('auth_token');
-    if (token) {
-      authToken = token;
-    }
-    return token;
-  } catch (error) {
-    console.error('Error loading token:', error);
-    return null;
-  }
-};
-
-// Clear token (logout)
-export const clearToken = async () => {
-  try {
-    await AsyncStorage.removeItem('auth_token');
-    authToken = null;
-  } catch (error) {
-    console.error('Error clearing token:', error);
-  }
-};
-
-// Get auth headers
-const getHeaders = () => {
+// Get auth headers using Supabase session token
+const getHeaders = async () => {
   const headers = {
     'Content-Type': 'application/json',
   };
-  if (authToken) {
-    headers['Authorization'] = `Bearer ${authToken}`;
+
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+  } catch (error) {
+    console.warn('Error getting session for headers:', error);
   }
+
   return headers;
-};
-
-// ==================== AUTH FUNCTIONS ====================
-
-/**
- * Register a new user
- * @param {string} email
- * @param {string} password
- * @param {string} name
- */
-export const register = async (email, password, name) => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, name }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return { success: false, error: data.error || 'Registration failed' };
-    }
-
-    // Save token
-    if (data.token) {
-      await saveToken(data.token);
-    }
-
-    return { success: true, user: data.user, token: data.token };
-  } catch (error) {
-    console.error('Register Error:', error);
-    return { success: false, error: 'Network error. Please try again.' };
-  }
-};
-
-/**
- * Login user
- * @param {string} email
- * @param {string} password
- */
-export const login = async (email, password) => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return { success: false, error: data.error || 'Login failed', code: data.code };
-    }
-
-    // Save token
-    if (data.token) {
-      await saveToken(data.token);
-    }
-
-    return { success: true, user: data.user, token: data.token };
-  } catch (error) {
-    console.error('Login Error:', error);
-    return { success: false, error: 'Network error. Please try again.' };
-  }
-};
-
-/**
- * Logout user
- */
-export const logout = async () => {
-  await clearToken();
-  return { success: true };
-};
-
-/**
- * Get current user profile
- */
-export const getProfile = async () => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/auth/profile`, {
-      headers: getHeaders(),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) {
-        await clearToken();
-      }
-      return { success: false, error: data.error || 'Failed to get profile' };
-    }
-
-    return { success: true, user: data.user };
-  } catch (error) {
-    console.error('Get Profile Error:', error);
-    return { success: false, error: 'Network error' };
-  }
-};
-
-/**
- * Update user profile
- */
-export const updateProfile = async (updates) => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/auth/profile`, {
-      method: 'PUT',
-      headers: getHeaders(),
-      body: JSON.stringify(updates),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to update profile' };
-    }
-
-    return { success: true, user: data.user };
-  } catch (error) {
-    console.error('Update Profile Error:', error);
-    return { success: false, error: 'Network error' };
-  }
-};
-
-/**
- * Update user settings
- */
-export const updateSettings = async (settings) => {
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/auth/settings`, {
-      method: 'PUT',
-      headers: getHeaders(),
-      body: JSON.stringify(settings),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return { success: false, error: data.error || 'Failed to update settings' };
-    }
-
-    return { success: true, settings: data.settings };
-  } catch (error) {
-    console.error('Update Settings Error:', error);
-    return { success: false, error: 'Network error' };
-  }
-};
-
-/**
- * Check if user is authenticated
- */
-export const isAuthenticated = () => {
-  return !!authToken;
 };
 
 // ==================== CHAT FUNCTIONS ====================
 
-/**
- * Send a message to the Gemini AI
- */
 export const formatHistory = (history) => {
   return history
     .filter(msg => msg.text && msg.text.trim())
     .map(msg => {
       const isUser = msg.isUser || msg.is_user;
       let text = msg.text;
-      // Mark messages that had images so AI remembers the context
       if (isUser && (msg.hasImage || msg.imageUri)) {
         text = `[User attached an image] ${text}`;
       }
@@ -234,12 +41,10 @@ export const formatHistory = (history) => {
 
 export const sendMessage = async (message, history = [], systemPrompt = '', chatId = null) => {
   try {
-    console.log('Sending to:', API_BASE_URL + '/api/chat');
-    console.log('SystemPrompt:', systemPrompt ? 'YES' : 'NO');
-
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/chat`, {
       method: 'POST',
-      headers: getHeaders(),
+      headers,
       body: JSON.stringify({
         message,
         history: formatHistory(history),
@@ -262,7 +67,7 @@ export const sendMessage = async (message, history = [], systemPrompt = '', chat
 
     return { response: data.response };
   } catch (error) {
-    console.error('API Error:', error);
+    console.warn('API Error:', error);
 
     if (error.message.includes('fetch') || error.message.includes('network')) {
       return {
@@ -278,14 +83,12 @@ export const sendMessage = async (message, history = [], systemPrompt = '', chat
   }
 };
 
-/**
- * Send a message with an image
- */
 export const sendMessageWithImage = async (message, imageBase64, history = [], systemPrompt = '', chatId = null) => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/chat`, {
       method: 'POST',
-      headers: getHeaders(),
+      headers,
       body: JSON.stringify({
         message,
         image: imageBase64,
@@ -303,7 +106,7 @@ export const sendMessageWithImage = async (message, imageBase64, history = [], s
 
     return { response: data.response };
   } catch (error) {
-    console.error('API Error:', error);
+    console.warn('API Error:', error);
     return {
       response: null,
       error: error.message || 'Failed to connect to AI. Please try again.'
@@ -311,22 +114,12 @@ export const sendMessageWithImage = async (message, imageBase64, history = [], s
   }
 };
 
-/**
- * Send a message with streaming response
- * @param {string} message - The message to send
- * @param {Array} history - Chat history
- * @param {string} systemPrompt - System prompt
- * @param {string} chatId - Chat ID
- * @param {Function} onChunk - Callback for each chunk received
- * @param {string} imageBase64 - Optional base64 image
- */
 export const sendMessageStream = async (message, history = [], systemPrompt = '', chatId = null, onChunk, imageBase64 = null) => {
   try {
-    console.log('Streaming to:', API_BASE_URL + '/api/chat/stream');
-
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/chat/stream`, {
       method: 'POST',
-      headers: getHeaders(),
+      headers,
       body: JSON.stringify({
         message,
         image: imageBase64,
@@ -375,7 +168,7 @@ export const sendMessageStream = async (message, history = [], systemPrompt = ''
 
     return { response: fullResponse };
   } catch (error) {
-    console.error('Streaming API Error:', error);
+    console.warn('Streaming API Error:', error);
     return {
       response: null,
       error: error.message || 'Failed to connect to AI. Please try again.'
@@ -385,14 +178,10 @@ export const sendMessageStream = async (message, history = [], systemPrompt = ''
 
 // ==================== CHAT CRUD OPERATIONS ====================
 
-/**
- * Get all chats from backend
- */
 export const getChats = async () => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/chats`, {
-      headers: getHeaders(),
-    });
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/api/chats`, { headers });
     const data = await response.json();
 
     if (!response.ok) {
@@ -404,19 +193,15 @@ export const getChats = async () => {
 
     return { chats: data.chats || [] };
   } catch (error) {
-    console.error('Get Chats Error:', error);
+    console.warn('Get Chats:', error.message);
     return { chats: [], error: error.message };
   }
 };
 
-/**
- * Get a single chat with messages
- */
 export const getChatById = async (chatId) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/chats/${chatId}`, {
-      headers: getHeaders(),
-    });
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/api/chats/${chatId}`, { headers });
     const data = await response.json();
 
     if (!response.ok) {
@@ -425,19 +210,17 @@ export const getChatById = async (chatId) => {
 
     return { chat: data.chat };
   } catch (error) {
-    console.error('Get Chat Error:', error);
+    console.warn('Get Chat:', error.message);
     return { chat: null, error: error.message };
   }
 };
 
-/**
- * Create a new chat
- */
 export const createChat = async (name, systemPrompt = '', icon = 'MessageSquare', iconColor = '#6F00FF') => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/chats`, {
       method: 'POST',
-      headers: getHeaders(),
+      headers,
       body: JSON.stringify({ name, systemPrompt, icon, iconColor }),
     });
 
@@ -449,19 +232,17 @@ export const createChat = async (name, systemPrompt = '', icon = 'MessageSquare'
 
     return { chat: data.chat };
   } catch (error) {
-    console.error('Create Chat Error:', error);
+    console.warn('Create Chat Error:', error);
     return { chat: null, error: error.message };
   }
 };
 
-/**
- * Delete a chat
- */
 export const deleteChat = async (chatId) => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/chats/${chatId}`, {
       method: 'DELETE',
-      headers: getHeaders(),
+      headers,
     });
 
     const data = await response.json();
@@ -472,19 +253,17 @@ export const deleteChat = async (chatId) => {
 
     return { success: true };
   } catch (error) {
-    console.error('Delete Chat Error:', error);
+    console.warn('Delete Chat Error:', error);
     return { success: false, error: error.message };
   }
 };
 
-/**
- * Clear all messages in a chat
- */
 export const clearChatMessages = async (chatId) => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/chats/${chatId}/messages`, {
       method: 'DELETE',
-      headers: getHeaders(),
+      headers,
     });
 
     const data = await response.json();
@@ -495,19 +274,17 @@ export const clearChatMessages = async (chatId) => {
 
     return { success: true };
   } catch (error) {
-    console.error('Clear Messages Error:', error);
+    console.warn('Clear Messages Error:', error);
     return { success: false, error: error.message };
   }
 };
 
-/**
- * Update a chat
- */
 export const updateChat = async (chatId, updates) => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/chats/${chatId}`, {
       method: 'PUT',
-      headers: getHeaders(),
+      headers,
       body: JSON.stringify(updates),
     });
 
@@ -519,14 +296,11 @@ export const updateChat = async (chatId, updates) => {
 
     return { chat: data.chat };
   } catch (error) {
-    console.error('Update Chat Error:', error);
+    console.warn('Update Chat Error:', error);
     return { chat: null, error: error.message };
   }
 };
 
-/**
- * Get all assistants (templates)
- */
 export const getAssistants = async () => {
   try {
     const response = await fetch(`${API_BASE_URL}/api/assistants`);
@@ -538,7 +312,7 @@ export const getAssistants = async () => {
 
     return { assistants: data.assistants || [] };
   } catch (error) {
-    console.error('Get Assistants Error:', error);
+    console.warn('Get Assistants:', error.message);
     return { assistants: [], error: error.message };
   }
 };
@@ -547,136 +321,139 @@ export const getAssistants = async () => {
 
 export const getDigestSettings = async () => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/digest/settings`, {
-      headers: getHeaders(),
-    });
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/api/digest/settings`, { headers });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to get digest settings');
     return { success: true, settings: data.settings };
   } catch (error) {
-    console.error('Get Digest Settings Error:', error);
+    console.warn('Get Digest Settings:', error.message);
     return { success: false, error: error.message };
   }
 };
 
 export const updateDigestSettings = async (settings) => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/digest/settings`, {
       method: 'PUT',
-      headers: getHeaders(),
+      headers,
       body: JSON.stringify(settings),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to update digest settings');
     return { success: true, settings: data.settings };
   } catch (error) {
-    console.error('Update Digest Settings Error:', error);
+    console.warn('Update Digest Settings Error:', error);
     return { success: false, error: error.message };
   }
 };
 
 export const getDigests = async () => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/digests`, {
-      headers: getHeaders(),
-    });
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/api/digests`, { headers });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to get digests');
     return { success: true, digests: data.digests || [] };
   } catch (error) {
-    console.error('Get Digests Error:', error);
+    console.warn('Get Digests:', error.message);
     return { success: false, digests: [], error: error.message };
   }
 };
 
 export const getDigestById = async (digestId) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/digests/${digestId}`, {
-      headers: getHeaders(),
-    });
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/api/digests/${digestId}`, { headers });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to get digest');
     return { success: true, digest: data.digest };
   } catch (error) {
-    console.error('Get Digest Error:', error);
+    console.warn('Get Digest:', error.message);
     return { success: false, error: error.message };
   }
 };
 
 export const getUnreadDigestCount = async () => {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/digests/unread/count`, {
-      headers: getHeaders(),
-    });
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/api/digests/unread/count`, { headers });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to get unread count');
     return { success: true, count: data.count };
   } catch (error) {
-    console.error('Get Unread Count Error:', error);
+    console.warn('Get Unread Count:', error.message);
     return { success: false, count: 0, error: error.message };
   }
 };
 
 export const deleteDigest = async (digestId) => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/digests/${digestId}`, {
       method: 'DELETE',
-      headers: getHeaders(),
+      headers,
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to delete digest');
     return { success: true };
   } catch (error) {
-    console.error('Delete Digest Error:', error);
+    console.warn('Delete Digest Error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+export const toggleBookmarkDigest = async (digestId) => {
+  try {
+    const headers = await getHeaders();
+    const response = await fetch(`${API_BASE_URL}/api/digests/${digestId}/bookmark`, {
+      method: 'PUT',
+      headers,
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to toggle bookmark');
+    return { success: true, digest: data.digest };
+  } catch (error) {
+    console.warn('Toggle Bookmark Error:', error);
     return { success: false, error: error.message };
   }
 };
 
 export const triggerTestDigest = async () => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/digest/test`, {
       method: 'POST',
-      headers: getHeaders(),
+      headers,
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to generate test digest');
     return { success: true, digest: data.digest };
   } catch (error) {
-    console.error('Test Digest Error:', error);
+    console.warn('Test Digest Error:', error);
     return { success: false, error: error.message };
   }
 };
 
 export const savePushToken = async (token) => {
   try {
+    const headers = await getHeaders();
     const response = await fetch(`${API_BASE_URL}/api/push-token`, {
       method: 'POST',
-      headers: getHeaders(),
+      headers,
       body: JSON.stringify({ token }),
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Failed to save push token');
     return { success: true };
   } catch (error) {
-    console.error('Save Push Token Error:', error);
+    console.warn('Save Push Token Error:', error);
     return { success: false, error: error.message };
   }
 };
 
 export default {
-  // Auth
-  register,
-  login,
-  logout,
-  getProfile,
-  updateProfile,
-  updateSettings,
-  isAuthenticated,
-  loadToken,
-  saveToken,
-  clearToken,
-  setAuthToken,
-  getAuthToken,
   // Chat
   sendMessage,
   sendMessageWithImage,
@@ -691,9 +468,10 @@ export default {
   getDigestSettings,
   updateDigestSettings,
   getDigests,
-  getDigestById: getDigestById,
+  getDigestById,
   getUnreadDigestCount,
   deleteDigest,
+  toggleBookmarkDigest,
   triggerTestDigest,
   savePushToken,
 };

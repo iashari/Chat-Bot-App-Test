@@ -87,6 +87,20 @@ const initDatabase = () => {
     // Column already exists, ignore
   }
 
+  // Add language column to digest_settings (migration)
+  try {
+    db.exec(`ALTER TABLE digest_settings ADD COLUMN language TEXT DEFAULT 'English'`);
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
+  // Add is_bookmarked column to digests (migration)
+  try {
+    db.exec(`ALTER TABLE digests ADD COLUMN is_bookmarked INTEGER DEFAULT 0`);
+  } catch (e) {
+    // Column already exists, ignore
+  }
+
   // Digest settings table
   db.exec(`
     CREATE TABLE IF NOT EXISTS digest_settings (
@@ -483,7 +497,7 @@ const createDigestSettings = (userId) => {
 };
 
 const updateDigestSettings = (userId, updates) => {
-  const allowedFields = ['enabled', 'digest_time', 'timezone', 'topics', 'custom_prompt', 'push_token'];
+  const allowedFields = ['enabled', 'digest_time', 'timezone', 'topics', 'custom_prompt', 'push_token', 'language'];
   const updateFields = [];
   const values = [];
 
@@ -535,6 +549,14 @@ const deleteDigest = (digestId, userId) => {
   return result.changes > 0;
 };
 
+const toggleBookmark = (digestId, userId) => {
+  const digest = getDigestById(digestId, userId);
+  if (!digest) return null;
+  const newValue = digest.is_bookmarked ? 0 : 1;
+  db.prepare('UPDATE digests SET is_bookmarked = ? WHERE id = ? AND user_id = ?').run(newValue, digestId, userId);
+  return getDigestById(digestId, userId);
+};
+
 const getEnabledDigestUsers = () => {
   return db.prepare(`
     SELECT ds.*, u.name, u.email
@@ -582,5 +604,6 @@ module.exports = {
   markDigestRead,
   getUnreadDigestCount,
   deleteDigest,
+  toggleBookmark,
   getEnabledDigestUsers,
 };

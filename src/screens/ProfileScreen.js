@@ -33,8 +33,10 @@ import {
   Camera,
   Newspaper,
 } from 'lucide-react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
+import { supabase } from '../lib/supabase';
 import useResponsive from '../hooks/useResponsive';
 import CustomAlert from '../components/CustomAlert';
 
@@ -42,7 +44,8 @@ const { width: screenWidth } = Dimensions.get('window');
 
 const ProfileScreen = ({ navigation }) => {
   const { theme, isDarkMode, toggleTheme } = useTheme();
-  const { user, logout } = useAuth();
+  const { user, logout, updateUserData } = useAuth();
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const { width, scale, moderateScale, isVerySmall, isSmall, isTablet } = useResponsive();
   const [showAIModeModal, setShowAIModeModal] = useState(false);
   const [showLanguageModal, setShowLanguageModal] = useState(false);
@@ -105,6 +108,84 @@ const ProfileScreen = ({ navigation }) => {
       }),
     ]).start();
   }, []);
+
+  const handleAvatarUpload = async () => {
+    try {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('Permission Required', 'Please allow access to your photo library.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+
+      if (result.canceled) return;
+
+      setUploadingAvatar(true);
+      const uri = result.assets[0].uri;
+      const ext = uri.split('.').pop() || 'jpg';
+      const fileName = `${user.id}/avatar.${ext}`;
+
+      // Read file as blob for upload
+      const response = await fetch(uri);
+      const blob = await response.blob();
+
+      // Convert blob to ArrayBuffer for Supabase upload
+      const arrayBuffer = await new Response(blob).arrayBuffer();
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(fileName, arrayBuffer, {
+          contentType: `image/${ext}`,
+          upsert: true,
+        });
+
+      if (uploadError) throw uploadError;
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(fileName);
+
+      // Add cache-buster to URL
+      const avatarUrl = `${publicUrl}?t=${Date.now()}`;
+
+      // Update profile in database
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ avatar_url: avatarUrl, updated_at: new Date().toISOString() })
+        .eq('id', user.id);
+
+      if (updateError) throw updateError;
+
+      // Update local user state
+      updateUserData({ avatar: avatarUrl });
+
+      setAlertConfig({
+        visible: true,
+        title: 'Profile Updated',
+        message: 'Your profile picture has been updated successfully!',
+        type: 'success',
+        buttons: [{ text: 'OK', style: 'default' }],
+      });
+    } catch (error) {
+      console.error('Avatar upload error:', error);
+      setAlertConfig({
+        visible: true,
+        title: 'Upload Failed',
+        message: 'Failed to upload profile picture. Please try again.',
+        type: 'error',
+        buttons: [{ text: 'OK', style: 'default' }],
+      });
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
 
   const handleLogout = () => {
     setAlertConfig({
@@ -305,7 +386,8 @@ const ProfileScreen = ({ navigation }) => {
                   </View>
                   <TouchableOpacity
                     style={styles.editBadgeWrapper}
-                    onPress={() => Alert.alert('Change Photo', 'Photo change feature coming soon.')}
+                    onPress={handleAvatarUpload}
+                    disabled={uploadingAvatar}
                   >
                     <LinearGradient
                       colors={[theme.gradient1, theme.gradient2]}

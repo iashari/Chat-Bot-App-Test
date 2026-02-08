@@ -4,14 +4,24 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Newspaper, X, ChevronRight } from 'lucide-react-native';
 import { useTheme } from '../context/ThemeContext';
 
-const InAppNotification = ({ visible, title, body, onPress, onDismiss, duration = 5000 }) => {
+const InAppNotification = ({ visible, title, body, onPress, onDismiss, duration = 6000 }) => {
   const { theme } = useTheme();
-  const slideAnim = useRef(new Animated.Value(-120)).current;
+  const slideAnim = useRef(new Animated.Value(-150)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
   const timerRef = useRef(null);
+  const onPressRef = useRef(onPress);
+  const onDismissRef = useRef(onDismiss);
+
+  // Keep refs updated so callbacks work even after unmount
+  useEffect(() => { onPressRef.current = onPress; }, [onPress]);
+  useEffect(() => { onDismissRef.current = onDismiss; }, [onDismiss]);
 
   useEffect(() => {
     if (visible) {
+      // Reset position
+      slideAnim.setValue(-150);
+      opacityAnim.setValue(0);
+
       // Slide in
       Animated.parallel([
         Animated.spring(slideAnim, {
@@ -27,9 +37,12 @@ const InAppNotification = ({ visible, title, body, onPress, onDismiss, duration 
         }),
       ]).start();
 
-      // Auto dismiss
+      // Auto dismiss (just visual, don't call onDismiss to avoid unmount)
+      if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
-        handleDismiss();
+        animateOut(() => {
+          if (onDismissRef.current) onDismissRef.current();
+        });
       }, duration);
     }
 
@@ -38,10 +51,10 @@ const InAppNotification = ({ visible, title, body, onPress, onDismiss, duration 
     };
   }, [visible]);
 
-  const handleDismiss = () => {
+  const animateOut = (callback) => {
     Animated.parallel([
       Animated.timing(slideAnim, {
-        toValue: -120,
+        toValue: -150,
         duration: 250,
         useNativeDriver: true,
       }),
@@ -51,16 +64,22 @@ const InAppNotification = ({ visible, title, body, onPress, onDismiss, duration 
         useNativeDriver: true,
       }),
     ]).start(() => {
-      if (onDismiss) onDismiss();
+      if (callback) callback();
+    });
+  };
+
+  const handleDismiss = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    animateOut(() => {
+      if (onDismissRef.current) onDismissRef.current();
     });
   };
 
   const handlePress = () => {
     if (timerRef.current) clearTimeout(timerRef.current);
-    handleDismiss();
-    setTimeout(() => {
-      if (onPress) onPress();
-    }, 300);
+    // Call onPress IMMEDIATELY, then animate out
+    if (onPressRef.current) onPressRef.current();
+    animateOut(() => {});
   };
 
   if (!visible) return null;
@@ -75,7 +94,7 @@ const InAppNotification = ({ visible, title, body, onPress, onDismiss, duration 
         },
       ]}
     >
-      <TouchableOpacity onPress={handlePress} activeOpacity={0.9} style={styles.touchable}>
+      <TouchableOpacity onPress={handlePress} activeOpacity={0.85} style={styles.touchable}>
         <View
           style={[
             styles.content,
@@ -108,7 +127,7 @@ const InAppNotification = ({ visible, title, body, onPress, onDismiss, duration 
       </TouchableOpacity>
 
       {/* Dismiss button */}
-      <TouchableOpacity onPress={handleDismiss} style={styles.dismissButton}>
+      <TouchableOpacity onPress={handleDismiss} style={styles.dismissButton} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
         <X size={14} color="rgba(255,255,255,0.6)" />
       </TouchableOpacity>
     </Animated.View>
@@ -121,9 +140,10 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    zIndex: 9999,
+    zIndex: 99999,
+    elevation: 99999,
     paddingHorizontal: 12,
-    paddingTop: Platform.OS === 'ios' ? 50 : 12,
+    paddingTop: Platform.OS === 'ios' ? 50 : 40,
   },
   touchable: {
     borderRadius: 16,
@@ -191,7 +211,7 @@ const styles = StyleSheet.create({
   },
   dismissButton: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 52 : 14,
+    top: Platform.OS === 'ios' ? 52 : 42,
     right: 16,
     width: 24,
     height: 24,

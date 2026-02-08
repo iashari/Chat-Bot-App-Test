@@ -47,12 +47,14 @@ const {
   markDigestRead,
   getUnreadDigestCount,
   deleteDigest: deleteDigestDb,
+  toggleBookmark,
   getEnabledDigestUsers,
 } = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET || null;
 
 // Initialize database
 initDatabase();
@@ -212,13 +214,32 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: 'Invalid or expired token' });
-    }
-    req.user = user;
-    next();
-  });
+  // Try Supabase JWT first, then fall back to custom JWT
+  if (SUPABASE_JWT_SECRET) {
+    jwt.verify(token, SUPABASE_JWT_SECRET, (err, decoded) => {
+      if (!err && decoded && decoded.sub) {
+        // Supabase JWT: 'sub' field contains the user UUID
+        req.user = { id: decoded.sub, email: decoded.email || '' };
+        return next();
+      }
+      // Fall back to custom JWT
+      jwt.verify(token, JWT_SECRET, (err2, user) => {
+        if (err2) {
+          return res.status(403).json({ error: 'Invalid or expired token' });
+        }
+        req.user = user;
+        next();
+      });
+    });
+  } else {
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+      if (err) {
+        return res.status(403).json({ error: 'Invalid or expired token' });
+      }
+      req.user = user;
+      next();
+    });
+  }
 };
 
 // Optional auth - doesn't fail if no token, just sets req.user to null
@@ -231,10 +252,24 @@ const optionalAuth = (req, res, next) => {
     return next();
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    req.user = err ? null : user;
-    next();
-  });
+  // Try Supabase JWT first, then custom JWT
+  if (SUPABASE_JWT_SECRET) {
+    jwt.verify(token, SUPABASE_JWT_SECRET, (err, decoded) => {
+      if (!err && decoded && decoded.sub) {
+        req.user = { id: decoded.sub, email: decoded.email || '' };
+        return next();
+      }
+      jwt.verify(token, JWT_SECRET, (err2, user) => {
+        req.user = err2 ? null : user;
+        next();
+      });
+    });
+  } else {
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+      req.user = err ? null : user;
+      next();
+    });
+  }
 };
 
 // ==================== HEALTH CHECK ====================
@@ -720,15 +755,16 @@ app.post('/api/chat/stream', optionalAuth, async (req, res) => {
 
 // ==================== DIGEST GENERATION (GEMINI + GOOGLE GROUNDING) ====================
 
-const generateDigest = async (topics = ['Technology', 'Science'], customPrompt = '') => {
+const generateDigest = async (topics = ['Technology', 'Science'], customPrompt = '', language = 'English') => {
   if (!ai) throw new Error('Gemini API key not configured for digest generation');
 
   const topicList = topics.join(', ');
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const languageInstruction = language && language !== 'English' ? `\n\nIMPORTANT: Write the entire digest in ${language} language.` : '';
 
   const prompt = customPrompt
-    ? `${customPrompt}\n\nTopics: ${topicList}\nDate: ${today}\n\nProvide a comprehensive news digest with the latest headlines and summaries. Format with clear headings, bullet points, and key takeaways. Include source references.`
-    : `Create a Daily AI News Digest for ${today}.\n\nTopics: ${topicList}\n\nProvide:\n1. A catchy title for today's digest\n2. 4-6 latest news stories with summaries for each topic\n3. Key takeaways and trends\n4. Format with markdown headings (##), bullet points, and bold text\n5. Keep each story summary to 2-3 sentences\n\nMake it informative, engaging, and well-structured.`;
+    ? `${customPrompt}\n\nTopics: ${topicList}\nDate: ${today}\n\nProvide a comprehensive news digest with the latest headlines and summaries. Format with clear headings, bullet points, and key takeaways. Include source references.${languageInstruction}`
+    : `Create a Daily AI News Digest for ${today}.\n\nTopics: ${topicList}\n\nProvide:\n1. A catchy title for today's digest\n2. 4-6 latest news stories with summaries for each topic\n3. Key takeaways and trends\n4. Format with markdown headings (##), bullet points, and bold text\n5. Keep each story summary to 2-3 sentences\n\nMake it informative, engaging, and well-structured.${languageInstruction}`;
 
   try {
     const response = await ai.models.generateContent({
@@ -846,6 +882,20 @@ app.delete('/api/digests/:id', authenticateToken, (req, res) => {
   }
 });
 
+// Toggle bookmark on a digest
+app.put('/api/digests/:id/bookmark', authenticateToken, (req, res) => {
+  try {
+    const digest = toggleBookmark(req.params.id, req.user.id);
+    if (!digest) {
+      return res.status(404).json({ error: 'Digest not found' });
+    }
+    res.json({ success: true, digest });
+  } catch (error) {
+    console.error('Toggle Bookmark Error:', error);
+    res.status(500).json({ error: 'Failed to toggle bookmark' });
+  }
+});
+
 // Generate test digest
 app.post('/api/digest/test', authenticateToken, async (req, res) => {
   try {
@@ -855,11 +905,13 @@ app.post('/api/digest/test', authenticateToken, async (req, res) => {
     const settings = getDigestSettings(req.user.id);
     const topics = JSON.parse(settings.topics || '["Technology","Science"]');
     const customPrompt = settings.custom_prompt || '';
+    const language = settings.language || 'English';
 
-    const result = await generateDigest(topics, customPrompt);
+    const result = await generateDigest(topics, customPrompt, language);
     const digest = createDigest(req.user.id, result.title, result.content, result.topics, result.sources);
 
     console.log('Test digest created:', digest.id);
+    console.log('Language:', language);
     console.log('Sources found:', result.sources.length);
     console.log('==============================\n');
 
@@ -946,8 +998,9 @@ const startDigestScheduler = () => {
             console.log(`Generating digest for ${userSettings.email} (${timezone})`);
             const topics = JSON.parse(userSettings.topics || '["Technology","Science"]');
             const customPrompt = userSettings.custom_prompt || '';
+            const language = userSettings.language || 'English';
 
-            const result = await generateDigest(topics, customPrompt);
+            const result = await generateDigest(topics, customPrompt, language);
             const digest = createDigest(userSettings.user_id, result.title, result.content, result.topics, result.sources);
             console.log(`Digest created for ${userSettings.email}`);
 

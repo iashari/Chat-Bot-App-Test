@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useRef, useEffect, useCallback } from 'react';
-import { getDigests } from '../services/api';
+import { getDigests, getUnreadDigestCount } from '../services/api';
 
 const NotificationContext = createContext();
 
@@ -12,6 +12,7 @@ export const NotificationProvider = ({ children }) => {
     body: '',
     digestId: null,
   });
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // Track last known digest to detect new ones
   const lastDigestIdRef = useRef(null);
@@ -23,6 +24,13 @@ export const NotificationProvider = ({ children }) => {
 
   const dismissNotification = useCallback(() => {
     setNotification(prev => ({ ...prev, visible: false }));
+  }, []);
+
+  const refreshUnreadCount = useCallback(async () => {
+    try {
+      const result = await getUnreadDigestCount();
+      if (result.success) setUnreadCount(result.count);
+    } catch (e) {}
   }, []);
 
   // Poll for new digests every 30 seconds
@@ -56,9 +64,13 @@ export const NotificationProvider = ({ children }) => {
     };
 
     checkForNewDigests();
-    const interval = setInterval(checkForNewDigests, 30000);
+    refreshUnreadCount();
+    const interval = setInterval(() => {
+      checkForNewDigests();
+      refreshUnreadCount();
+    }, 30000);
     return () => clearInterval(interval);
-  }, [showNotification]);
+  }, [showNotification, refreshUnreadCount]);
 
   return (
     <NotificationContext.Provider
@@ -66,6 +78,8 @@ export const NotificationProvider = ({ children }) => {
         notification,
         showNotification,
         dismissNotification,
+        unreadCount,
+        refreshUnreadCount,
       }}
     >
       {children}

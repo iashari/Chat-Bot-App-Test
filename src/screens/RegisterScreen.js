@@ -39,7 +39,8 @@ import {
 
 const RegisterScreen = ({ navigation }) => {
   const { theme, isDarkMode } = useTheme();
-  const { register } = useAuth();
+  const { register, signInWithGoogle } = useAuth();
+  const [googleLoading, setGoogleLoading] = useState(false);
   const { width, height } = useWindowDimensions();
 
   const [name, setName] = useState('');
@@ -216,6 +217,22 @@ const RegisterScreen = ({ navigation }) => {
     }
   };
 
+  const handleGoogleSignup = async () => {
+    setGoogleLoading(true);
+    const result = await signInWithGoogle();
+    setGoogleLoading(false);
+
+    if (!result.success) {
+      setAlertConfig({
+        visible: true,
+        title: 'Google Sign-Up Failed',
+        message: result.error || 'Could not sign up with Google',
+        type: 'error',
+        buttons: [{ text: 'OK', style: 'default' }],
+      });
+    }
+  };
+
   const strength = passwordStrength();
 
   const renderInput = (icon, placeholder, value, onChangeText, options = {}) => {
@@ -375,11 +392,45 @@ const RegisterScreen = ({ navigation }) => {
         </LinearGradient>
       </TouchableOpacity>
 
+      {/* Divider */}
+      <View style={[styles.dividerRow, { marginTop: rs.sectionGap }]}>
+        <View style={[styles.dividerLine, { backgroundColor: theme.glassBorder }]} />
+        <Text style={[styles.dividerText, { color: theme.textMuted, fontSize: rs.featureFontSize }]}>or</Text>
+        <View style={[styles.dividerLine, { backgroundColor: theme.glassBorder }]} />
+      </View>
+
+      {/* Google Sign-Up Button (Bonus) */}
+      <TouchableOpacity
+        onPress={handleGoogleSignup}
+        disabled={googleLoading}
+        activeOpacity={0.8}
+        style={[
+          styles.googleButton,
+          {
+            borderColor: theme.glassBorder,
+            height: rs.buttonHeight,
+            borderRadius: rs.buttonRadius,
+            marginTop: rs.sectionGap,
+          }
+        ]}
+      >
+        {googleLoading ? (
+          <ActivityIndicator color={theme.text} size="small" />
+        ) : (
+          <>
+            <Text style={{ fontSize: rs.inputIconSize }}>G</Text>
+            <Text style={[styles.googleButtonText, { color: theme.text, fontSize: rs.buttonFontSize - 2 }]}>
+              Sign up with Google
+            </Text>
+          </>
+        )}
+      </TouchableOpacity>
+
       {/* Features */}
       <View style={[styles.features, { marginTop: rs.sectionGap * 1.5, gap: rs.featureGap }]}>
         {[
           'Unlimited AI conversations',
-          'Personalized chat experience',
+          'Real-time group chat',
           'Secure & private',
         ].map((feature, index) => (
           <View key={index} style={[styles.featureRow, { gap: rs.inputPadding }]}>
@@ -669,6 +720,28 @@ const styles = StyleSheet.create({
   loginLinkText: {},
   loginLinkAction: {
     fontWeight: '700',
+  },
+  dividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+  },
+  dividerText: {
+    fontWeight: '500',
+  },
+  googleButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    gap: 10,
+  },
+  googleButtonText: {
+    fontWeight: '600',
   },
 });
 

@@ -1,60 +1,207 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
-import { loadToken, login as apiLogin, register as apiRegister, logout as apiLogout, getProfile } from '../services/api';
+import { supabase } from '../lib/supabase';
+import { makeRedirectUri } from 'expo-auth-session';
+import * as WebBrowser from 'expo-web-browser';
 
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
+  const [profile, setProfile] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
-  // Load saved token and user on app start
+  // Fetch profile from Supabase profiles table
+  const fetchProfile = async (userId) => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      console.error('Fetch profile error:', error);
+      return null;
+    }
+  };
+
+  // Set user data from session
+  const setSessionUser = async (session) => {
+    if (session?.user) {
+      const profileData = await fetchProfile(session.user.id);
+      const userData = {
+        id: session.user.id,
+        email: session.user.email,
+        name: profileData?.full_name || session.user.user_metadata?.full_name || 'User',
+        avatar: profileData?.avatar_url || session.user.user_metadata?.avatar_url || null,
+      };
+      setUser(userData);
+      setProfile(profileData);
+      setIsAuthenticated(true);
+    } else {
+      setUser(null);
+      setProfile(null);
+      setIsAuthenticated(false);
+    }
+  };
+
+  // Listen for auth state changes
   useEffect(() => {
-    const initAuth = async () => {
+    let subscription;
+
+    const init = async () => {
       try {
-        const token = await loadToken();
-        if (token) {
-          // Verify token by getting profile
-          const result = await getProfile();
-          if (result.success) {
-            setUser(result.user);
-            setIsAuthenticated(true);
-          }
-        }
+        // Get initial session
+        const { data: { session } } = await supabase.auth.getSession();
+        await setSessionUser(session);
       } catch (error) {
-        console.error('Auth init error:', error);
+        console.error('Session restore error:', error);
       } finally {
         setIsLoading(false);
       }
+
+      // Listen for auth changes
+      const { data } = supabase.auth.onAuthStateChange(
+        async (_event, session) => {
+          await setSessionUser(session);
+        }
+      );
+      subscription = data.subscription;
     };
 
-    initAuth();
+    init();
+
+    return () => {
+      if (subscription) subscription.unsubscribe();
+    };
   }, []);
 
+  // Login with email/password
   const login = async (email, password) => {
-    const result = await apiLogin(email, password);
-    if (result.success) {
-      setUser(result.user);
-      setIsAuthenticated(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        // Map Supabase errors to user-friendly messages
+        if (error.message.includes('Invalid login credentials')) {
+          return { success: false, error: 'Incorrect email or password. Please try again.', code: 'INVALID_CREDENTIALS' };
+        }
+        return { success: false, error: error.message };
+      }
+
+      return { success: true, user: data.user };
+    } catch (error) {
+      console.error('Login error:', error);
+      return { success: false, error: 'Network error. Please try again.' };
     }
-    return { success: result.success, error: result.error, code: result.code, user: result.user };
   };
 
+  // Register with email/password
   const register = async (email, password, name) => {
-    const result = await apiRegister(email, password, name);
-    if (result.success) {
-      setUser(result.user);
-      setIsAuthenticated(true);
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: name,
+          },
+        },
+      });
+
+      if (error) {
+        if (error.message.includes('already registered')) {
+          return { success: false, error: 'An account with this email already exists.' };
+        }
+        return { success: false, error: error.message };
+      }
+
+      return { success: true, user: data.user };
+    } catch (error) {
+      console.error('Register error:', error);
+      return { success: false, error: 'Network error. Please try again.' };
     }
-    return result;
   };
 
+  // Logout
   const logout = async () => {
-    await apiLogout();
-    setUser(null);
-    setIsAuthenticated(false);
+    try {
+      await supabase.auth.signOut();
+      setUser(null);
+      setProfile(null);
+      setIsAuthenticated(false);
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
   };
 
+  // Google OAuth login (Bonus)
+  const signInWithGoogle = async () => {
+    try {
+      const redirectTo = makeRedirectUri();
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo,
+          skipBrowserRedirect: true,
+        },
+      });
+
+      if (error) return { success: false, error: error.message };
+
+      // Open browser for OAuth flow
+      const result = await WebBrowser.openAuthSessionAsync(
+        data.url,
+        redirectTo
+      );
+
+      if (result.type === 'success') {
+        const url = result.url;
+        // Extract tokens from URL hash
+        const params = new URLSearchParams(url.split('#')[1]);
+        const accessToken = params.get('access_token');
+        const refreshToken = params.get('refresh_token');
+
+        if (accessToken && refreshToken) {
+          const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken,
+          });
+
+          if (sessionError) return { success: false, error: sessionError.message };
+          return { success: true, user: sessionData.user };
+        }
+      }
+
+      return { success: false, error: 'Google sign-in was cancelled' };
+    } catch (error) {
+      console.error('Google sign-in error:', error);
+      return { success: false, error: 'Google sign-in failed. Please try again.' };
+    }
+  };
+
+  // Magic Link login (Bonus)
+  const signInWithMagicLink = async (email) => {
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+      });
+
+      if (error) return { success: false, error: error.message };
+      return { success: true, message: 'Check your email for the magic link!' };
+    } catch (error) {
+      console.error('Magic link error:', error);
+      return { success: false, error: 'Failed to send magic link. Please try again.' };
+    }
+  };
+
+  // Update user data locally
   const updateUserData = (newData) => {
     setUser(prev => ({ ...prev, ...newData }));
   };
@@ -63,12 +210,16 @@ export const AuthProvider = ({ children }) => {
     <AuthContext.Provider
       value={{
         user,
+        profile,
         isLoading,
         isAuthenticated,
         login,
         register,
         logout,
+        signInWithGoogle,
+        signInWithMagicLink,
         updateUserData,
+        fetchProfile,
       }}
     >
       {children}
