@@ -319,6 +319,8 @@ const RoomChatScreen = ({ route, navigation }) => {
             }
             return [...prev, data];
           });
+          // Clear typing indicator for this sender (they sent a message, so they stopped typing)
+          setTypingUsers(prev => prev.filter(u => u.userId !== data.sender_id));
           // Check for celebration keywords
           checkCelebration(data.content);
         }
@@ -334,10 +336,18 @@ const RoomChatScreen = ({ route, navigation }) => {
       }
     );
 
-    // Typing
+    // Typing (with auto-clear safety timeout)
+    const typingClearTimers = {};
     channel.on('broadcast', { event: 'typing' }, (payload) => {
       const { userId, userName, isTyping } = payload.payload;
       if (userId === user.id) return;
+
+      // Clear existing timeout for this user
+      if (typingClearTimers[userId]) {
+        clearTimeout(typingClearTimers[userId]);
+        delete typingClearTimers[userId];
+      }
+
       setTypingUsers(prev => {
         if (isTyping) {
           if (!prev.find(u => u.userId === userId)) return [...prev, { userId, userName }];
@@ -345,6 +355,14 @@ const RoomChatScreen = ({ route, navigation }) => {
         }
         return prev.filter(u => u.userId !== userId);
       });
+
+      // Auto-clear after 5s if no stop-typing broadcast received
+      if (isTyping) {
+        typingClearTimers[userId] = setTimeout(() => {
+          setTypingUsers(prev => prev.filter(u => u.userId !== userId));
+          delete typingClearTimers[userId];
+        }, 5000);
+      }
     });
 
     // Reactions broadcast
@@ -533,7 +551,7 @@ const RoomChatScreen = ({ route, navigation }) => {
     } else {
       setMentionResults([]);
     }
-  }, [members, user.id]);
+  }, [members, user.id, handleTyping]);
 
   const selectMention = useCallback((member) => {
     const name = member.profiles?.full_name || 'User';
