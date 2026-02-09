@@ -1,3 +1,4 @@
+// Room Chat Screen with real-time messaging
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, TextInput, FlatList, TouchableOpacity, StyleSheet,
@@ -20,8 +21,6 @@ import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 import * as ImagePicker from 'expo-image-picker';
-import * as FileSystem from 'expo-file-system/legacy';
-import { decode } from 'base64-arraybuffer';
 
 // Responsive scaling
 const BASE_WIDTH = 393;
@@ -532,6 +531,25 @@ const RoomChatScreen = ({ route, navigation }) => {
     }
   }, []);
 
+  // Typing broadcast
+  const handleTyping = useCallback(() => {
+    if (channelRef.current && isSubscribedRef.current) {
+      channelRef.current.send({
+        type: 'broadcast', event: 'typing',
+        payload: { userId: user.id, userName: user.name, isTyping: true },
+      });
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = setTimeout(() => {
+        if (channelRef.current && isSubscribedRef.current) {
+          channelRef.current.send({
+            type: 'broadcast', event: 'typing',
+            payload: { userId: user.id, userName: user.name, isTyping: false },
+          });
+        }
+      }, 2000);
+    }
+  }, [user.id, user.name]);
+
   // ===== @MENTION AUTOCOMPLETE =====
   const handleTextChange = useCallback((text) => {
     setNewMessage(text);
@@ -608,25 +626,6 @@ const RoomChatScreen = ({ route, navigation }) => {
     setActionMessage(null);
   }, [actionMessage, user.id]);
 
-  // Typing broadcast
-  const handleTyping = useCallback(() => {
-    if (channelRef.current && isSubscribedRef.current) {
-      channelRef.current.send({
-        type: 'broadcast', event: 'typing',
-        payload: { userId: user.id, userName: user.name, isTyping: true },
-      });
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = setTimeout(() => {
-        if (channelRef.current && isSubscribedRef.current) {
-          channelRef.current.send({
-            type: 'broadcast', event: 'typing',
-            payload: { userId: user.id, userName: user.name, isTyping: false },
-          });
-        }
-      }, 2000);
-    }
-  }, [user.id, user.name]);
-
   // Send message
   const handleSend = async () => {
     if ((!newMessage.trim() && !selectedImage) || sending) return;
@@ -653,23 +652,13 @@ const RoomChatScreen = ({ route, navigation }) => {
           const fileName = `${roomId}/${Date.now()}_${user.id}.${ext}`;
           const contentType = ext === 'png' ? 'image/png' : 'image/jpeg';
 
-          let uploadError, uploadData;
-          if (Platform.OS === 'web') {
-            const response = await fetch(selectedImage.uri);
-            const blob = await response.blob();
-            ({ data: uploadData, error: uploadError } = await supabase.storage
-              .from('chat-images')
-              .upload(fileName, blob, { contentType, upsert: true }));
-          } else {
-            // React Native: read as base64 then decode to ArrayBuffer
-            const base64Data = await FileSystem.readAsStringAsync(selectedImage.uri, {
-              encoding: 'base64',
-            });
-            const arrayBuffer = decode(base64Data);
-            ({ data: uploadData, error: uploadError } = await supabase.storage
-              .from('chat-images')
-              .upload(fileName, arrayBuffer, { contentType, upsert: true }));
-          }
+          // Fetch image as blob (works on both web and native)
+          const response = await fetch(selectedImage.uri);
+          const blob = await response.blob();
+
+          const { data: uploadData, error: uploadError } = await supabase.storage
+            .from('chat-images')
+            .upload(fileName, blob, { contentType, upsert: true });
 
           if (uploadError) {
             console.warn('Image upload error:', uploadError.message);

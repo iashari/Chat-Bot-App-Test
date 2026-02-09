@@ -25,6 +25,8 @@ import {
   ArrowRight,
   MessageSquare,
 } from 'lucide-react-native';
+import * as Google from 'expo-auth-session/providers/google';
+import * as WebBrowser from 'expo-web-browser';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import CustomAlert from '../components/CustomAlert';
@@ -38,6 +40,10 @@ import {
   isLargeDevice,
 } from '../utils/responsive';
 
+WebBrowser.maybeCompleteAuthSession();
+
+const GOOGLE_CLIENT_ID = '813525956658-gihb5g9put32ibntg1erh42fa8d29m3v.apps.googleusercontent.com';
+
 const LoginScreen = ({ navigation }) => {
   const { theme, isDarkMode } = useTheme();
   const { login, signInWithGoogle, signInWithMagicLink } = useAuth();
@@ -45,6 +51,11 @@ const LoginScreen = ({ navigation }) => {
   const [magicLinkLoading, setMagicLinkLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const { width, height } = useWindowDimensions();
+
+  // Google ID Token auth (bypasses callback redirect issues)
+  const [googleRequest, googleResponse, googlePromptAsync] = Google.useIdTokenAuthRequest({
+    clientId: GOOGLE_CLIENT_ID,
+  });
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -192,20 +203,39 @@ const LoginScreen = ({ navigation }) => {
     }
   };
 
-  const handleGoogleLogin = async () => {
-    setGoogleLoading(true);
-    const result = await signInWithGoogle();
-    setGoogleLoading(false);
-
-    if (!result.success) {
+  // Handle Google auth response
+  useEffect(() => {
+    if (googleResponse?.type === 'success') {
+      const { id_token } = googleResponse.params;
+      (async () => {
+        setGoogleLoading(true);
+        const result = await signInWithGoogle(id_token);
+        setGoogleLoading(false);
+        if (!result.success) {
+          setAlertConfig({
+            visible: true,
+            title: 'Google Sign-In Failed',
+            message: result.error || 'Could not sign in with Google',
+            type: 'error',
+            buttons: [{ text: 'OK', style: 'default' }],
+          });
+        }
+      })();
+    } else if (googleResponse?.type === 'error') {
+      setGoogleLoading(false);
       setAlertConfig({
         visible: true,
         title: 'Google Sign-In Failed',
-        message: result.error || 'Could not sign in with Google',
+        message: googleResponse.error?.message || 'Authentication was cancelled',
         type: 'error',
         buttons: [{ text: 'OK', style: 'default' }],
       });
     }
+  }, [googleResponse]);
+
+  const handleGoogleLogin = async () => {
+    setGoogleLoading(true);
+    await googlePromptAsync();
   };
 
   const handleMagicLink = async () => {

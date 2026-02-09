@@ -1,7 +1,5 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { makeRedirectUri } from 'expo-auth-session';
-import * as WebBrowser from 'expo-web-browser';
 
 const AuthContext = createContext();
 
@@ -141,47 +139,18 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Google OAuth login (Bonus)
-  const signInWithGoogle = async () => {
+  // Google sign-in using ID token (works on both web and native)
+  const signInWithGoogle = async (idToken) => {
     try {
-      const redirectTo = makeRedirectUri();
-      const { data, error } = await supabase.auth.signInWithOAuth({
+      const { data, error } = await supabase.auth.signInWithIdToken({
         provider: 'google',
-        options: {
-          redirectTo,
-          skipBrowserRedirect: true,
-        },
+        token: idToken,
       });
 
       if (error) return { success: false, error: error.message };
-
-      // Open browser for OAuth flow
-      const result = await WebBrowser.openAuthSessionAsync(
-        data.url,
-        redirectTo
-      );
-
-      if (result.type === 'success') {
-        const url = result.url;
-        // Extract tokens from URL hash
-        const params = new URLSearchParams(url.split('#')[1]);
-        const accessToken = params.get('access_token');
-        const refreshToken = params.get('refresh_token');
-
-        if (accessToken && refreshToken) {
-          const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          });
-
-          if (sessionError) return { success: false, error: sessionError.message };
-          return { success: true, user: sessionData.user };
-        }
-      }
-
-      return { success: false, error: 'Google sign-in was cancelled' };
+      return { success: true, user: data.user };
     } catch (error) {
-      console.error('Google sign-in error:', error);
+      console.warn('Google sign-in error:', error);
       return { success: false, error: 'Google sign-in failed. Please try again.' };
     }
   };
