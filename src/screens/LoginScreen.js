@@ -40,8 +40,6 @@ import {
   isLargeDevice,
 } from '../utils/responsive';
 
-WebBrowser.maybeCompleteAuthSession();
-
 const GOOGLE_CLIENT_ID = '813525956658-gihb5g9put32ibntg1erh42fa8d29m3v.apps.googleusercontent.com';
 
 const LoginScreen = ({ navigation }) => {
@@ -52,10 +50,11 @@ const LoginScreen = ({ navigation }) => {
   const [googleLoading, setGoogleLoading] = useState(false);
   const { width, height } = useWindowDimensions();
 
-  // Google ID Token auth (bypasses callback redirect issues)
+  // Google ID Token auth
   const [googleRequest, googleResponse, googlePromptAsync] = Google.useIdTokenAuthRequest({
     clientId: GOOGLE_CLIENT_ID,
   });
+
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -203,39 +202,29 @@ const LoginScreen = ({ navigation }) => {
     }
   };
 
-  // Handle Google auth response
-  useEffect(() => {
-    if (googleResponse?.type === 'success') {
-      const { id_token } = googleResponse.params;
-      (async () => {
-        setGoogleLoading(true);
-        const result = await signInWithGoogle(id_token);
-        setGoogleLoading(false);
-        if (!result.success) {
+  const handleGoogleLogin = async () => {
+    if (!googleRequest) return;
+    setGoogleLoading(true);
+    try {
+      const result = await googlePromptAsync();
+      if (result?.type === 'success') {
+        const { id_token } = result.params;
+        const signInResult = await signInWithGoogle(id_token);
+        if (!signInResult.success) {
           setAlertConfig({
             visible: true,
             title: 'Google Sign-In Failed',
-            message: result.error || 'Could not sign in with Google',
+            message: signInResult.error || 'Could not sign in with Google',
             type: 'error',
             buttons: [{ text: 'OK', style: 'default' }],
           });
         }
-      })();
-    } else if (googleResponse?.type === 'error') {
+      }
+    } catch (error) {
+      console.warn('Google login error:', error);
+    } finally {
       setGoogleLoading(false);
-      setAlertConfig({
-        visible: true,
-        title: 'Google Sign-In Failed',
-        message: googleResponse.error?.message || 'Authentication was cancelled',
-        type: 'error',
-        buttons: [{ text: 'OK', style: 'default' }],
-      });
     }
-  }, [googleResponse]);
-
-  const handleGoogleLogin = async () => {
-    setGoogleLoading(true);
-    await googlePromptAsync();
   };
 
   const handleMagicLink = async () => {
@@ -450,7 +439,7 @@ const LoginScreen = ({ navigation }) => {
       {/* Google Sign-In Button (Bonus) */}
       <TouchableOpacity
         onPress={handleGoogleLogin}
-        disabled={googleLoading}
+        disabled={googleLoading || !googleRequest}
         activeOpacity={0.8}
         style={[
           styles.socialButton,

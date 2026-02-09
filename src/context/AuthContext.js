@@ -139,14 +139,13 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Google sign-in using ID token (works on both web and native)
+  // Google sign-in using ID token
   const signInWithGoogle = async (idToken) => {
     try {
       const { data, error } = await supabase.auth.signInWithIdToken({
         provider: 'google',
         token: idToken,
       });
-
       if (error) return { success: false, error: error.message };
       return { success: true, user: data.user };
     } catch (error) {
