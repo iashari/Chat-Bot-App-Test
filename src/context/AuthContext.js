@@ -1,5 +1,8 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
+import { Platform } from 'react-native';
 import { supabase } from '../lib/supabase';
+
+const GOOGLE_CLIENT_ID = '813525956658-gihb5g9put32ibntg1erh42fa8d29m3v.apps.googleusercontent.com';
 
 const AuthContext = createContext();
 
@@ -52,6 +55,25 @@ export const AuthProvider = ({ children }) => {
 
     const init = async () => {
       try {
+        // Check if we're returning from Google OAuth redirect (id_token in URL hash)
+        if (Platform.OS === 'web' && window.location.hash) {
+          const hashParams = new URLSearchParams(window.location.hash.substring(1));
+          const idToken = hashParams.get('id_token');
+          if (idToken) {
+            // Clear the hash from URL
+            window.history.replaceState(null, '', window.location.pathname);
+            const { data, error } = await supabase.auth.signInWithIdToken({
+              provider: 'google',
+              token: idToken,
+            });
+            if (!error && data?.session) {
+              await setSessionUser(data.session);
+              setIsLoading(false);
+              return;
+            }
+          }
+        }
+
         // Get initial session
         const { data: { session } } = await supabase.auth.getSession();
         await setSessionUser(session);
@@ -139,8 +161,30 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // Google sign-in using ID token
-  const signInWithGoogle = async (idToken) => {
+  // Google sign-in — direct redirect to Google on web (no Supabase callback)
+  const signInWithGoogle = async () => {
+    try {
+      if (Platform.OS === 'web') {
+        const nonce = Math.random().toString(36).substring(2) + Date.now().toString(36);
+        const params = new URLSearchParams({
+          client_id: GOOGLE_CLIENT_ID,
+          redirect_uri: window.location.origin,
+          response_type: 'id_token',
+          scope: 'openid email profile',
+          nonce,
+        });
+        window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+        return { success: true };
+      }
+      return { success: false, error: 'Use native Google sign-in' };
+    } catch (error) {
+      console.warn('Google sign-in error:', error);
+      return { success: false, error: 'Google sign-in failed. Please try again.' };
+    }
+  };
+
+  // Exchange Google ID token for Supabase session (called after redirect back)
+  const handleGoogleIdToken = async (idToken) => {
     try {
       const { data, error } = await supabase.auth.signInWithIdToken({
         provider: 'google',
@@ -149,8 +193,8 @@ export const AuthProvider = ({ children }) => {
       if (error) return { success: false, error: error.message };
       return { success: true, user: data.user };
     } catch (error) {
-      console.warn('Google sign-in error:', error);
-      return { success: false, error: 'Google sign-in failed. Please try again.' };
+      console.warn('Google token error:', error);
+      return { success: false, error: 'Google sign-in failed.' };
     }
   };
 

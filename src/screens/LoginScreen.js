@@ -25,8 +25,6 @@ import {
   ArrowRight,
   MessageSquare,
 } from 'lucide-react-native';
-import * as Google from 'expo-auth-session/providers/google';
-import * as WebBrowser from 'expo-web-browser';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import CustomAlert from '../components/CustomAlert';
@@ -40,8 +38,6 @@ import {
   isLargeDevice,
 } from '../utils/responsive';
 
-const GOOGLE_CLIENT_ID = '813525956658-gihb5g9put32ibntg1erh42fa8d29m3v.apps.googleusercontent.com';
-
 const LoginScreen = ({ navigation }) => {
   const { theme, isDarkMode } = useTheme();
   const { login, signInWithGoogle, signInWithMagicLink } = useAuth();
@@ -49,11 +45,6 @@ const LoginScreen = ({ navigation }) => {
   const [magicLinkLoading, setMagicLinkLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const { width, height } = useWindowDimensions();
-
-  // Google ID Token auth
-  const [googleRequest, googleResponse, googlePromptAsync] = Google.useIdTokenAuthRequest({
-    clientId: GOOGLE_CLIENT_ID,
-  });
 
 
   const [email, setEmail] = useState('');
@@ -203,27 +194,18 @@ const LoginScreen = ({ navigation }) => {
   };
 
   const handleGoogleLogin = async () => {
-    if (!googleRequest) return;
     setGoogleLoading(true);
-    try {
-      const result = await googlePromptAsync();
-      if (result?.type === 'success') {
-        const { id_token } = result.params;
-        const signInResult = await signInWithGoogle(id_token);
-        if (!signInResult.success) {
-          setAlertConfig({
-            visible: true,
-            title: 'Google Sign-In Failed',
-            message: signInResult.error || 'Could not sign in with Google',
-            type: 'error',
-            buttons: [{ text: 'OK', style: 'default' }],
-          });
-        }
-      }
-    } catch (error) {
-      console.warn('Google login error:', error);
-    } finally {
+    const result = await signInWithGoogle();
+    // On web this redirects the page to Google — loading resets on page reload
+    if (result && !result.success) {
       setGoogleLoading(false);
+      setAlertConfig({
+        visible: true,
+        title: 'Google Sign-In Failed',
+        message: result.error || 'Could not sign in with Google',
+        type: 'error',
+        buttons: [{ text: 'OK', style: 'default' }],
+      });
     }
   };
 
@@ -439,7 +421,7 @@ const LoginScreen = ({ navigation }) => {
       {/* Google Sign-In Button (Bonus) */}
       <TouchableOpacity
         onPress={handleGoogleLogin}
-        disabled={googleLoading || !googleRequest}
+        disabled={googleLoading}
         activeOpacity={0.8}
         style={[
           styles.socialButton,
